@@ -1,0 +1,26 @@
+# Личные данные — не попадают в публичный репозиторий
+profile.py
+
+# Секреты и сессии
+.env
+*.session.json
+hh_session.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Локальное
+hh-automation/
+metrics.sqlite
+*.log
+.claude/
