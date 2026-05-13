@@ -439,6 +439,18 @@ pre.log {
 }
 .pager #page-info { padding: 0 4px; font-variant-numeric: tabular-nums; }
 .pager button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.view-toggle { margin: 8px 0 4px; font-size: 12px; color: var(--muted); }
+.view-toggle label { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px; }
+.chat-group-row td { background: rgba(79, 140, 255, 0.06); }
+.chat-group-row .chat-count {
+  display: inline-block; padding: 1px 7px; border-radius: 10px;
+  background: var(--accent); color: #fff; font-size: 11px; margin-left: 6px;
+}
+.chat-group-row.expanded td { background: rgba(79, 140, 255, 0.12); }
+.chat-child-row td:first-child { padding-left: 28px; }
+.chat-child-row { display: none; }
+.chat-group-row.expanded + tbody .chat-child-row,
+tr.chat-child-row.visible { display: table-row; }
 .tabs { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }
 .tab { padding: 6px 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--panel);
        cursor: pointer; font-size: 13px; color: var(--muted); user-select: none; }
@@ -670,6 +682,9 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
       <div class="tab" data-filter="skip">⏭️ Пропуски <span class="count" id="cnt-skip">0</span></div>
       <div class="tab" data-filter="error">❌ Ошибки <span class="count" id="cnt-error">0</span></div>
     </div>
+    <div class="view-toggle">
+      <label><input type="checkbox" id="group-by-chat"> 📁 Свернуть по чату</label>
+    </div>
     <table id="events" class="events-table">
       <thead><tr>
         <th>Время</th><th>Тип</th><th>Вакансия</th><th>Компания</th><th>Tokens</th><th>$ </th><th>Превью</th>
@@ -825,6 +840,8 @@ let eventFilter = 'all';
 let eventsPage = 0;
 let eventsPageSize = 100;
 let eventsTotal = 0;
+let groupByChat = false;
+const expandedChats = new Set();
 
 function eventPreview(e){
   const p = e.payload || {};
@@ -863,6 +880,30 @@ function eventPreview(e){
   return '';
 }
 
+function renderEventRow(e){
+  const p = e.payload || {};
+  const url = p.vacancy_url || e.chat_url || '';
+  const title = p.title || (e.vacancy || '').split(' · ')[0] || (e.kind === 'reply' ? '(чат)' : '');
+  const employer = p.employer || ((e.vacancy || '').split(' · ')[1] || '');
+  const titleCell = url
+    ? `<a class="row-link" href="${escapeHtml(url)}" target="_blank" onclick="event.stopPropagation()">${escapeHtml(title)}</a>`
+    : escapeHtml(title);
+  const tokens = (e.tokens_in || 0) + ' → ' + (e.tokens_out || 0);
+  const previewHtml = eventPreview(e);
+  const isHtml = previewHtml.startsWith('<');
+  const previewCell = isHtml
+    ? `<td class="preview">${previewHtml}<b>${escapeHtml(String(p.title || '').slice(0, 100))}</b></td>`
+    : `<td class="preview"><b>${escapeHtml(previewHtml.slice(0, 220))}</b></td>`;
+  return `
+    <td class="muted">${fmtTime(e.ts)}</td>
+    <td><span class="kind k-${e.kind}">${e.kind}</span></td>
+    <td>${titleCell}</td>
+    <td class="muted">${escapeHtml(employer)}</td>
+    <td>${tokens}</td>
+    <td>${e.cost_usd ? '$' + e.cost_usd.toFixed(4) : ''}</td>
+    ${previewCell}`;
+}
+
 function applyFilter(){
   const tbody = $('#events tbody');
   const list = eventFilter === 'all'
@@ -872,6 +913,89 @@ function applyFilter(){
     tbody.innerHTML = `<tr><td colspan="7" class="muted">нет событий в этом фильтре</td></tr>`;
     return;
   }
+
+  // Режим «свернуть по чату»: группируем reply+skip по chat_url, остальные — как обычно
+  if (groupByChat) {
+    const groups = new Map(); // key = chat_url, value = {newest, items[]}
+    const ungrouped = [];
+    for (const e of list) {
+      const groupable = (e.kind === 'reply' || e.kind === 'skip') && e.chat_url;
+      if (!groupable) { ungrouped.push(e); continue; }
+      const key = e.chat_url;
+      if (!groups.has(key)) groups.set(key, { url: key, items: [] });
+      groups.get(key).items.push(e);
+    }
+    // Сортируем группы по времени самого свежего события (он же первый — list уже DESC)
+    const rows = [];
+    const flat = [];
+    for (const [key, g] of groups) flat.push({ type: 'group', key, items: g.items });
+    for (const e of ungrouped)    flat.push({ type: 'single', event: e });
+    flat.sort((a, b) => {
+      const ta = a.type === 'group' ? a.items[0].ts : a.event.ts;
+      const tb = b.type === 'group' ? b.items[0].ts : b.event.ts;
+      return tb - ta;
+    });
+
+    let html = '';
+    for (const entry of flat) {
+      if (entry.type === 'single') {
+        const e = entry.event;
+        html += `<tr data-id="${e.id}">${renderEventRow(e)}</tr>`;
+        continue;
+      }
+      const head = entry.items[0];
+      const count = entry.items.length;
+      const isOpen = expandedChats.has(entry.key);
+      const p = head.payload || {};
+      const url = p.vacancy_url || head.chat_url || '';
+      const title = p.title || (head.vacancy || '').split(' · ')[0] || '(чат)';
+      const employer = p.employer || ((head.vacancy || '').split(' · ')[1] || '');
+      const replies = entry.items.filter(x => x.kind === 'reply').length;
+      const skips   = entry.items.filter(x => x.kind === 'skip').length;
+      const titleCell = url
+        ? `<a class="row-link" href="${escapeHtml(url)}" target="_blank" onclick="event.stopPropagation()">${escapeHtml(title)}</a>`
+        : escapeHtml(title);
+      const totalTokens = entry.items.reduce((s, x) => s + (x.tokens_in||0) + (x.tokens_out||0), 0);
+      const totalCost   = entry.items.reduce((s, x) => s + (x.cost_usd||0), 0);
+      const lastReply   = entry.items.find(x => x.kind === 'reply');
+      const previewTxt  = lastReply && lastReply.payload ? (lastReply.payload.reply || '') : '';
+      html += `<tr class="chat-group-row ${isOpen ? 'expanded' : ''}" data-chat="${escapeHtml(entry.key)}">
+        <td class="muted">${fmtTime(head.ts)}</td>
+        <td><span class="kind k-reply">${isOpen ? '▼' : '▶'} chat</span>
+            <span class="chat-count">${count}</span>
+            ${replies ? `<span class="chat-count" style="background:var(--ok)">${replies}r</span>` : ''}
+            ${skips ? `<span class="chat-count" style="background:var(--muted)">${skips}s</span>` : ''}</td>
+        <td>${titleCell}</td>
+        <td class="muted">${escapeHtml(employer)}</td>
+        <td>${totalTokens.toLocaleString('ru-RU')}</td>
+        <td>${totalCost ? '$' + totalCost.toFixed(4) : ''}</td>
+        <td class="preview"><b>${escapeHtml(String(previewTxt).slice(0, 220))}</b></td>
+      </tr>`;
+      for (const e of entry.items) {
+        html += `<tr class="chat-child-row ${isOpen ? 'visible' : ''}" data-id="${e.id}" data-parent="${escapeHtml(entry.key)}">${renderEventRow(e)}</tr>`;
+      }
+    }
+    tbody.innerHTML = html;
+
+    tbody.querySelectorAll('tr.chat-group-row').forEach(tr => {
+      tr.addEventListener('click', (ev) => {
+        if (ev.target.closest('a')) return;
+        const key = tr.dataset.chat;
+        if (expandedChats.has(key)) expandedChats.delete(key);
+        else expandedChats.add(key);
+        applyFilter();
+      });
+    });
+    tbody.querySelectorAll('tr.chat-child-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const id = parseInt(tr.dataset.id);
+        const ev = lastEvents.find(x => x.id === id);
+        if (ev) openModal(ev);
+      });
+    });
+    return;
+  }
+
   tbody.innerHTML = list.map(e => {
     const p = e.payload || {};
     const url = p.vacancy_url || e.chat_url || '';
@@ -950,6 +1074,19 @@ document.addEventListener('click', (ev) => {
   eventsPage = 0; // сменили фильтр — на первую страницу
   refreshEvents();
 });
+
+$('#group-by-chat').addEventListener('change', (ev) => {
+  groupByChat = ev.target.checked;
+  try { localStorage.setItem('hh-group-by-chat', groupByChat ? '1' : '0'); } catch(_) {}
+  applyFilter();
+});
+// восстановить настройку из localStorage
+try {
+  if (localStorage.getItem('hh-group-by-chat') === '1') {
+    groupByChat = true;
+    $('#group-by-chat').checked = true;
+  }
+} catch(_) {}
 
 $('#page-size').addEventListener('change', (ev) => {
   eventsPageSize = parseInt(ev.target.value, 10) || 100;

@@ -299,6 +299,28 @@ def is_skip_response(text: str) -> bool:
 
 def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "") -> str:
     """Генерирует ответ через Claude Haiku 4.5 на основе MY_PROFILE и истории чата."""
+    # Hard guard: если последний блок history принадлежит нам — отвечать не на что.
+    # Это страховка на случай, если парсер уже отметил блок как [Я], либо если
+    # текст последнего блока совпадает с нашим прошлым ответом (защита от
+    # генерации второго ответа на собственное сообщение).
+    if chat_history:
+        blocks = [b.strip() for b in chat_history.strip().split("\n\n") if b.strip()]
+        if blocks:
+            last = blocks[-1]
+            if last.startswith(SELF_ROLE_PREFIX) or last.startswith("[Иван"):
+                print("    ⏭️  Последний блок — от нас, отвечать не на что")
+                return "SKIP"
+            # Снимаем префикс [Роль] и сверяем содержимое с маркерами «своё»
+            content = last
+            if content.startswith("["):
+                end = content.find("]")
+                if end > 0:
+                    content = content[end + 1:].strip()
+            prev_self_known = tuple(get_last_self_replies(chat_url, n=5))
+            if _text_is_own(content, prev_self_known):
+                print("    ⏭️  Содержимое последнего блока совпадает с нашим текстом — SKIP")
+                return "SKIP"
+
     overused = get_overused_projects_in_chat(chat_url)
     antirepeat_block = ""
     if overused:
@@ -512,6 +534,42 @@ try:
 except Exception:
     SELF_NAME_MARKERS: tuple[str, ...] = ()
 
+# Длинные строки подписи (≥10 символов) из LETTER_SIGNATURE — характерные
+# фрагменты, по которым легко идентифицировать собственное письмо. HH часто
+# рендерит подпись отклика отдельным сообщением в чате с пустым author —
+# парсер по геометрии может ошибочно отнести её к работодателю.
+try:
+    from profile import LETTER_SIGNATURE as _LS  # type: ignore
+    SELF_SIGNATURE_LINES = tuple(
+        l.strip().lower() for l in (_LS or "").splitlines()
+        if l.strip() and len(l.strip()) >= 10
+    )
+except Exception:
+    SELF_SIGNATURE_LINES: tuple[str, ...] = ()
+
+
+def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:
+    """Эвристика «этот текст — наш».
+
+    Срабатывает если:
+      • в тексте есть характерная строка из LETTER_SIGNATURE (подпись отклика),
+      • в тексте упоминается одно из SELF_NAME_MARKERS (наше ФИО),
+      • первые 60 символов совпадают с одним из наших УЖЕ ОТПРАВЛЕННЫХ ответов
+        в этом же чате (передаётся через prev_self_replies).
+    """
+    if not text:
+        return False
+    tl = text.lower()
+    if any(l in tl for l in SELF_SIGNATURE_LINES):
+        return True
+    if any(m in tl for m in SELF_NAME_MARKERS):
+        return True
+    for prev in prev_self_replies:
+        head = (prev or "").strip()[:60].lower()
+        if head and head in tl:
+            return True
+    return False
+
 REJECT_MARKERS = (
     "отказ", "к сожалению", "не подходит", "не подошл",
     "вакансия закр", "выбрали другого", "не готовы рассм",
@@ -624,7 +682,13 @@ def is_rejection(history: str) -> bool:
     return any(m in last.lower() for m in REJECT_MARKERS)
 
 
-def _detect_role(author: str, has_author_field: bool, side: str = "") -> str:
+def _detect_role(
+    author: str,
+    has_author_field: bool,
+    side: str = "",
+    text: str = "",
+    prev_self_replies: tuple[str, ...] = (),
+) -> str:
     """Определяет роль отправителя.
 
     Раньше эвристика была: «нет author field → значит исходящее (мы)».
@@ -635,7 +699,19 @@ def _detect_role(author: str, has_author_field: bool, side: str = "") -> str:
     HH ставит исходящие справа, входящие слева.
 
     side: 'right' → мы, 'left' → собеседник, '' → неизвестно (fallback).
+
+    Дополнительно: после геометрической классификации запускаем
+    content-override через _text_is_own — если в тексте видна наша подпись
+    LETTER_SIGNATURE, наше ФИО или совпадение с известным прошлым ответом,
+    блок маркируется как SELF_ROLE независимо от side/author. Это лечит
+    кейс, когда HH рендерит наше сообщение в чате с author='Работодатель'
+    или без author-поля, и парсер ошибочно считает его входящим.
     """
+    # Content-override (приоритет: совпадение с нашими маркерами всегда сильнее
+    # геометрии и author, потому что HH рендерит DOM неконсистентно).
+    if text and _text_is_own(text, prev_self_replies):
+        return SELF_ROLE
+
     a = (author or "").strip()
     if side == "right":
         return SELF_ROLE
@@ -710,6 +786,10 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
         }
     """) or []
 
+    # Известные собственные отправки в ЭТОМ чате — content-override в парсере
+    # снимает ошибочную маркировку «[Работодатель]» с наших же сообщений.
+    prev_self = tuple(get_last_self_replies(chat_url, n=20))
+
     seen_ids = set()
     items = []  # (msg_id_int, role, text)
     for m in raw:
@@ -720,7 +800,13 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
         text = (m.get("text") or "").strip()
         if not text:
             continue
-        role = _detect_role(m.get("author") or "", bool(m.get("hasAuthor")), m.get("side") or "")
+        role = _detect_role(
+            m.get("author") or "",
+            bool(m.get("hasAuthor")),
+            m.get("side") or "",
+            text=text,
+            prev_self_replies=prev_self,
+        )
         items.append((int(msg_id), role, text))
 
     # Сортируем по msg_id (чем больше, тем позже), берём последние 15.
