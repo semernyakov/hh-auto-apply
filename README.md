@@ -2,7 +2,19 @@
 
 > Автоматизация поиска работы на HH.ru: умный поиск вакансий, AI-генерация сопроводительных писем и человечные ответы в чате. Личные данные пользователя — вне публичного кода.
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Haiku 4.5](https://img.shields.io/badge/AI-Claude%20Haiku%204.5-purple)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Claude Haiku 4.5](https://img.shields.io/badge/AI-Claude%20Haiku%204.5-D97757?logo=anthropic&logoColor=white)](https://www.anthropic.com/claude)
+[![Playwright](https://img.shields.io/badge/browser-Playwright-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
+[![FastAPI](https://img.shields.io/badge/dashboard-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-d7ff64?logo=ruff)](https://github.com/astral-sh/ruff)
+
+[![GitHub stars](https://img.shields.io/github/stars/semernyakov/hh-auto-apply?style=social)](https://github.com/semernyakov/hh-auto-apply/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/semernyakov/hh-auto-apply?style=social)](https://github.com/semernyakov/hh-auto-apply/network/members)
+[![Last commit](https://img.shields.io/github/last-commit/semernyakov/hh-auto-apply)](https://github.com/semernyakov/hh-auto-apply/commits/main)
+[![Issues](https://img.shields.io/github/issues/semernyakov/hh-auto-apply)](https://github.com/semernyakov/hh-auto-apply/issues)
+[![Pull requests](https://img.shields.io/github/issues-pr/semernyakov/hh-auto-apply)](https://github.com/semernyakov/hh-auto-apply/pulls)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 > [!CAUTION]
 > **Отказ от ответственности.** Проект распространяется «как есть» исключительно в **образовательных и личных некоммерческих целях**. Использование может нарушать [Условия использования HH.ru](https://hh.ru/article/agreement_paid_services) и привести к **блокировке аккаунта**, финансовым потерям и иным последствиям — все риски на пользователе. **Авторы не несут ответственности** ни за какие прямые или косвенные убытки, связанные с использованием Проекта.
@@ -143,9 +155,8 @@ make start
 
 ## Contributing
 
-PR-ы приветствуются. Перед отправкой:
-1. Убедитесь, что `profile.py` не закоммичен.
-2. Прогоните `ruff check` (если установлен).
-3. Опишите кейс — какую проблему решает изменение и как это проверить.
+PR-ы приветствуются — см. [CONTRIBUTING.md](CONTRIBUTING.md) для воркфлоу, стиля кода, чек-листа перед PR.
 
-Если нашли утечку приватных данных в коде или истории — **сначала** свяжитесь приватно через GitHub Security Advisories, не открывайте публичный issue.
+## Security
+
+Если нашли утечку приватных данных, XSS, SQL-injection или иную уязвимость — **не открывайте публичный issue**. Воспользуйтесь GitHub Security Advisories, подробности и шаблон отчёта — в [SECURITY.md](SECURITY.md).
