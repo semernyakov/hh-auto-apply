@@ -321,6 +321,33 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
                 print("    ⏭️  Содержимое последнего блока совпадает с нашим текстом — SKIP")
                 return "SKIP"
 
+    # Робот-анкета: автобот HH присылает серию однотипных вопросов («Был ли опыт…?»),
+    # которые уходят работодателю в summary. Любой авто-ответ от Claude тут — риск:
+    # неверная связка вскроется на оффере, отозвать нельзя. Кидаем в отдельную
+    # очередь и пусть отвечает человек.
+    robot_flag, robot_reason = is_robot_questionnaire(chat_history)
+    if robot_flag:
+        last_question = ""
+        if chat_history:
+            for b in reversed([x.strip() for x in chat_history.strip().split("\n\n") if x.strip()]):
+                if not b.startswith(SELF_ROLE_PREFIX):
+                    _, body = _strip_role_prefix(b)
+                    last_question = body
+                    break
+        print(f"    🤖 Робот-анкета ({robot_reason}) — в отдельную очередь, ответит человек")
+        metrics.log_event(
+            kind="robot_questionnaire",
+            vacancy=vacancy_title,
+            chat_url=chat_url,
+            payload={
+                "reason": robot_reason,
+                "last_question": last_question[:600],
+                "history_len": len(chat_history),
+                "history_tail": chat_history[-2000:] if chat_history else "",
+            },
+        )
+        return "SKIP"
+
     overused = get_overused_projects_in_chat(chat_url)
     antirepeat_block = ""
     if overused:
@@ -680,6 +707,83 @@ def is_rejection(history: str) -> bool:
     if last.startswith(SELF_ROLE_PREFIX):
         return False
     return any(m in last.lower() for m in REJECT_MARKERS)
+
+
+# Маркеры автора, по которым диалог считается анкетой автобота HH/работодателя.
+# Сравнение по подстроке, case-insensitive — так что «Робот-рекрутёр», «HR-бот»,
+# «Recruiting bot», «Чат-бот компании X» отлавливаются одинаково.
+ROBOT_AUTHOR_MARKERS = (
+    "робот", "чат-бот", "чатбот", "автоотклик", "автоответ",
+    "hr-бот", "hr бот", "bot", "auto-recruiter", "recruiter bot",
+)
+
+# Шаблонные зачины вопросов из анкет автоботов. Если ≥2 последних входящих
+# сообщения подряд начинаются с такого зачина — это анкета, даже если автор
+# не помечен как «робот» (HH иногда отдаёт пустого author у системных шаблонов).
+QUESTIONNAIRE_LEAD_PATTERNS = (
+    "был ли у вас", "были ли у вас", "был ли опыт", "есть ли у вас",
+    "есть ли опыт", "имеется ли", "имеете ли", "знакомы ли вы",
+    "владеете ли вы", "приходилось ли", "доводилось ли",
+    "какой у вас опыт", "какие у вас", "какие именно",
+    "сколько лет опыта", "сколько у вас опыта", "сколько вам лет",
+    "укажите ваш", "укажите вашу", "оцените свой", "оцените ваш",
+    "уровень владения", "уровень знания",
+)
+
+
+def _strip_role_prefix(block: str) -> tuple[str, str]:
+    """Возвращает (role, body) из блока истории '[Роль]\\nтекст…'."""
+    b = block.strip()
+    if b.startswith("["):
+        end = b.find("]")
+        if end > 0:
+            return b[1:end].strip(), b[end + 1:].strip()
+    return "", b
+
+
+def _looks_like_questionnaire_question(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if len(t.split()) > 40:
+        return False
+    tl = t.lower()
+    return any(p in tl for p in QUESTIONNAIRE_LEAD_PATTERNS)
+
+
+def is_robot_questionnaire(history: str) -> tuple[bool, str]:
+    """Определяет, что последнее входящее сообщение — это вопрос из анкеты автобота.
+
+    Возвращает (флаг, причина). Причина — короткая метка для логов и payload:
+      'author_marker:<author>' — последний входящий помечен ролью с маркером робота,
+      'pattern:series'         — последние ≥2 входящих подряд — шаблонные вопросы анкеты.
+    """
+    if not history:
+        return False, ""
+    blocks = [b.strip() for b in history.strip().split("\n\n") if b.strip()]
+    if not blocks:
+        return False, ""
+
+    incoming: list[tuple[str, str]] = []
+    for b in blocks:
+        role, body = _strip_role_prefix(b)
+        if role == SELF_ROLE:
+            continue
+        incoming.append((role, body))
+    if not incoming:
+        return False, ""
+
+    last_role, _ = incoming[-1]
+    rl = last_role.lower()
+    if rl and any(m in rl for m in ROBOT_AUTHOR_MARKERS):
+        return True, f"author_marker:{last_role[:40]}"
+
+    # Pattern fallback: автор не помечен, но последние два входящих сообщения
+    # подряд — шаблонные вопросы анкеты. Реальный HR редко делает так подряд.
+    tail = incoming[-2:]
+    if len(tail) == 2 and all(_looks_like_questionnaire_question(b) for _, b in tail):
+        return True, "pattern:series"
+    return False, ""
 
 
 def _detect_role(

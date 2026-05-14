@@ -186,6 +186,31 @@ def get_positive_signals(limit: int = 100) -> list[dict[str, Any]]:
     return out
 
 
+def get_robot_questionnaires(limit: int = 200) -> list[dict[str, Any]]:
+    """События 'robot_questionnaire' (анкеты автоботов — требуют ручного ответа).
+    Дедуп по chat_url: берём самое свежее на чат, чтобы серия из 5 вопросов
+    подряд от одного робота не плодила 5 одинаковых записей."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT id, ts, kind, vacancy, chat_url, payload_json FROM events
+               WHERE kind = 'robot_questionnaire'
+                 AND id IN (
+                   SELECT MAX(id) FROM events
+                   WHERE kind = 'robot_questionnaire'
+                   GROUP BY COALESCE(NULLIF(chat_url, ''), CAST(id AS TEXT))
+                 )
+               ORDER BY ts DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["payload"] = json.loads(d.pop("payload_json")) if d.get("payload_json") else {}
+        out.append(d)
+    return out
+
+
 def get_pending_manual() -> list[dict[str, Any]]:
     """Возвращает все события вида 'pending_manual', которые ещё не обработаны."""
     with _conn() as c:
@@ -303,7 +328,8 @@ def get_rate_stats() -> dict[str, Any]:
                     SUM(CASE WHEN kind='pending_manual'  THEN 1 ELSE 0 END) AS pending_manual,
                     SUM(CASE WHEN kind='boost'           THEN 1 ELSE 0 END) AS boost,
                     SUM(CASE WHEN kind='rejection'       THEN 1 ELSE 0 END) AS rejection,
-                    SUM(CASE WHEN kind='positive_signal' THEN 1 ELSE 0 END) AS positive_signal
+                    SUM(CASE WHEN kind='positive_signal' THEN 1 ELSE 0 END) AS positive_signal,
+                    SUM(CASE WHEN kind='robot_questionnaire' THEN 1 ELSE 0 END) AS robot_questionnaire
                    FROM events WHERE ts >= ?""",
                 (since,),
             ).fetchone()
@@ -324,6 +350,7 @@ def get_rate_stats() -> dict[str, Any]:
                 "boost": row["boost"] or 0,
                 "rejection": row["rejection"] or 0,
                 "positive_signal": row["positive_signal"] or 0,
+                "robot_questionnaire": row["robot_questionnaire"] or 0,
             }
 
         # последние run_start для каждого воркера

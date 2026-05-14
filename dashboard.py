@@ -231,6 +231,11 @@ def api_rejections(limit: int = 100) -> JSONResponse:
     return JSONResponse({"rejections": metrics.get_rejections(limit=limit)})
 
 
+@app.get("/api/robot-questionnaires")
+def api_robot_questionnaires(limit: int = 200) -> JSONResponse:
+    return JSONResponse({"questionnaires": metrics.get_robot_questionnaires(limit=limit)})
+
+
 @app.post("/api/positive/{event_id}/resolve")
 def api_positive_resolve(event_id: int) -> JSONResponse:
     ok = metrics.resolve_event(event_id, "positive_signal_handled", expected_kind="positive_signal")
@@ -405,6 +410,7 @@ tr:last-child td { border-bottom: none; }
 .k-positive_signal { background: rgba(46, 204, 113, 0.20); color: var(--ok); }
 .k-positive_signal_handled { background: rgba(139, 147, 167, 0.18); color: var(--muted); }
 .k-rejection { background: rgba(231, 76, 60, 0.18); color: var(--err); }
+.k-robot_questionnaire { background: rgba(155, 89, 182, 0.20); color: #c89cff; }
 .sig-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
 .sig-interview        { background: rgba(46, 204, 113, 0.20); color: var(--ok); }
 .sig-contact_request  { background: rgba(79, 140, 255, 0.20); color: var(--accent); }
@@ -570,10 +576,10 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     <h2>⏱ Активность за последние</h2>
     <table class="events-table">
       <thead><tr>
-        <th>Окно</th><th>Откликов</th><th>Ответов в чат</th><th>Подъёмов резюме</th><th>Дублей пропущено</th><th>Прочих skip</th><th>Ошибок</th><th>В ручную очередь</th><th>Отказов</th><th>🎯 Положительных</th>
+        <th>Окно</th><th>Откликов</th><th>Ответов в чат</th><th>Подъёмов резюме</th><th>Дублей пропущено</th><th>Прочих skip</th><th>Ошибок</th><th>В ручную очередь</th><th>Отказов</th><th>🎯 Положительных</th><th>🤖 Анкет роботов</th>
       </tr></thead>
       <tbody id="rates-body">
-        <tr><td colspan="10" class="muted">загружаю…</td></tr>
+        <tr><td colspan="11" class="muted">загружаю…</td></tr>
       </tbody>
     </table>
   </section>
@@ -661,6 +667,16 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
   </section>
 
   <section>
+    <h2>🤖 Анкеты автоботов — ждут ручного ответа <span class="muted" id="robotq-count" style="font-weight:400;text-transform:none;letter-spacing:0">— 0</span></h2>
+    <table id="robotq" class="events-table">
+      <thead><tr>
+        <th>Когда</th><th>Вакансия / чат</th><th>Причина</th><th>Последний вопрос</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4" class="muted">пусто</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>🚫 Отказы работодателей <span class="muted" id="rejection-count" style="font-weight:400;text-transform:none;letter-spacing:0">— 0</span></h2>
     <table id="rejections" class="events-table">
       <thead><tr>
@@ -679,6 +695,7 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
       <div class="tab" data-filter="pending_manual">🚩 Ручная очередь <span class="count" id="cnt-pending_manual">0</span></div>
       <div class="tab" data-filter="positive_signal">🎯 Положительные <span class="count" id="cnt-positive_signal">0</span></div>
       <div class="tab" data-filter="rejection">🚫 Отказы <span class="count" id="cnt-rejection">0</span></div>
+      <div class="tab" data-filter="robot_questionnaire">🤖 Анкеты роботов <span class="count" id="cnt-robot_questionnaire">0</span></div>
       <div class="tab" data-filter="skip">⏭️ Пропуски <span class="count" id="cnt-skip">0</span></div>
       <div class="tab" data-filter="error">❌ Ошибки <span class="count" id="cnt-error">0</span></div>
     </div>
@@ -805,6 +822,7 @@ async function refreshStatus(){
         <td>${fmtNum(w.pending_manual)}</td>
         <td>${fmtNum(w.rejection)}</td>
         <td>${fmtNum(w.positive_signal)}</td>
+        <td>${fmtNum(w.robot_questionnaire)}</td>
       </tr>`;
     }).join('');
 
@@ -866,6 +884,11 @@ function eventPreview(e){
       if (!blocks[i].startsWith('[Я')) { lastHr = blocks[i]; break; }
     }
     return '🚫 ' + lastHr.slice(0, 220);
+  }
+  if (e.kind === 'robot_questionnaire') {
+    const reason = (p.reason || '').split(':')[0] || '';
+    const tag = reason ? `<span class="reason-badge">${escapeHtml(reason)}</span>` : '';
+    return tag + '🤖 ' + escapeHtml((p.last_question || '').slice(0, 220));
   }
   if (e.kind === 'skip') {
     const reason = p.reason || '';
@@ -1059,6 +1082,12 @@ async function updateTabCounts(){
       const r4 = await fetch('/api/events?limit=500&kind=rejection');
       const d4 = await r4.json();
       elRJ.textContent = d4.events.length;
+    }
+    const elRQ = document.getElementById('cnt-robot_questionnaire');
+    if (elRQ) {
+      const r5 = await fetch('/api/events?limit=500&kind=robot_questionnaire');
+      const d5 = await r5.json();
+      elRQ.textContent = d5.events.length;
     }
     const elAll = document.getElementById('cnt-all');
     if (elAll) elAll.textContent = total;
@@ -1503,12 +1532,66 @@ function openRejectionModal(it){
   $('#modal').classList.add('show');
 }
 
+async function refreshRobotQuestionnaires(){
+  try {
+    const r = await fetch('/api/robot-questionnaires'); const d = await r.json();
+    const items = d.questionnaires || [];
+    $('#robotq-count').textContent = '— ' + items.length;
+    const tbody = $('#robotq tbody');
+    if (!items.length){
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">пока пусто</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(it => {
+      const p = it.payload || {};
+      const url = it.chat_url || '';
+      const vac = it.vacancy || '(чат)';
+      const reason = (p.reason || '').split(':')[0] || '—';
+      const q = p.last_question || lastHrMessage(p.history_tail || '');
+      const link = url
+        ? `<a class="row-link" href="${escapeHtml(url)}" target="_blank">${escapeHtml(vac)}</a>`
+        : escapeHtml(vac);
+      return `<tr data-id="${it.id}">
+        <td class="muted">${fmtAgo(it.ts, Date.now()/1000)}</td>
+        <td>${link}</td>
+        <td><span class="reason-badge">${escapeHtml(reason)}</span></td>
+        <td class="preview"><b>${escapeHtml((q || '').slice(0, 280))}</b></td>
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const id = parseInt(tr.dataset.id);
+        const it = items.find(x => x.id === id);
+        if (it) openRobotQModal(it);
+      });
+    });
+  } catch(e){ /* ignore */ }
+}
+
+function openRobotQModal(it){
+  const p = it.payload || {};
+  const url = it.chat_url || '';
+  const time = new Date(it.ts * 1000).toLocaleString('ru-RU');
+  const linkHtml = url ? `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(url)}</a>` : '<span class="muted">—</span>';
+  $('#modal-title').textContent = it.vacancy || 'анкета автобота';
+  $('#modal-meta').innerHTML = `
+    <div><b>Причина:</b> ${escapeHtml(p.reason || '—')}</div>
+    <div><b>Время:</b> ${escapeHtml(time)} · <b>Чат:</b> ${linkHtml}</div>
+    <div><b>Последний вопрос:</b> ${escapeHtml(p.last_question || '—')}</div>
+  `;
+  $('#modal-body').classList.add('body');
+  $('#modal-body').textContent = p.history_tail || '(история не сохранилась)';
+  $('#modal').classList.add('show');
+}
+
 async function tick(){
   await Promise.all([
     refreshStatus(),
     refreshPending(),
     refreshPositive(),
     refreshRejections(),
+    refreshRobotQuestionnaires(),
     refreshEvents(),
     refreshLog('apply'),
     refreshLog('reply'),
