@@ -249,6 +249,75 @@ def api_robot_questionnaire_resolve(event_id: int) -> JSONResponse:
     return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
 
 
+@app.post("/api/robot-questionnaires/{event_id}/dismiss")
+def api_robot_questionnaire_dismiss(event_id: int) -> JSONResponse:
+    ok = metrics.resolve_event(
+        event_id, "robot_questionnaire_dismissed", expected_kind="robot_questionnaire"
+    )
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.post("/api/robot-questionnaires/{event_id}/send")
+def api_robot_questionnaire_send(event_id: int, body: dict = Body(...)) -> JSONResponse:
+    """Отправить ответ на анкету через playwright (использует сохранённую сессию)."""
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "пустой ответ"}, status_code=400)
+    if len(text) > 4000:
+        return JSONResponse(
+            {"ok": False, "error": f"слишком длинно ({len(text)}/4000)"}, status_code=400
+        )
+
+    questionnaires = metrics.get_robot_questionnaires(limit=500)
+    record = next((q for q in questionnaires if q["id"] == event_id), None)
+    if not record:
+        return JSONResponse(
+            {"ok": False, "error": "анкета не найдена или уже обработана"}, status_code=404
+        )
+    chat_url = record.get("chat_url") or ""
+    if not chat_url:
+        return JSONResponse({"ok": False, "error": "URL чата отсутствует"}, status_code=400)
+
+    try:
+        from playwright.sync_api import sync_playwright
+        from auto_reply import post_reply
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            ctx = browser.new_context(storage_state=str(SESSION_FILE))
+            page = ctx.new_page()
+            try:
+                page.goto(chat_url, wait_until="commit", timeout=30000)
+                page.wait_for_selector(
+                    "textarea[data-qa='chatik-new-message-text'], "
+                    "div[contenteditable='true'][data-qa='chatik-input']",
+                    timeout=15000,
+                )
+                sent = post_reply(page, text)
+            finally:
+                browser.close()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"playwright: {e}"}, status_code=500)
+
+    if not sent:
+        return JSONResponse({"ok": False, "error": "не удалось отправить (поле/кнопка)"}, status_code=500)
+
+    metrics.log_event(
+        kind="reply",
+        vacancy=record.get("vacancy", ""),
+        chat_url=chat_url,
+        payload={
+            "reply": text,
+            "type": "manual_via_dashboard",
+            "from_robot_questionnaire_id": event_id,
+        },
+    )
+    metrics.resolve_event(
+        event_id, "robot_questionnaire_replied", expected_kind="robot_questionnaire"
+    )
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/positive/{event_id}/resolve")
 def api_positive_resolve(event_id: int) -> JSONResponse:
     ok = metrics.resolve_event(event_id, "positive_signal_handled", expected_kind="positive_signal")
@@ -424,6 +493,9 @@ tr:last-child td { border-bottom: none; }
 .k-positive_signal_handled { background: rgba(139, 147, 167, 0.18); color: var(--muted); }
 .k-rejection { background: rgba(231, 76, 60, 0.18); color: var(--err); }
 .k-robot_questionnaire { background: rgba(155, 89, 182, 0.20); color: #c89cff; }
+.k-robot_questionnaire_handled { background: rgba(46, 204, 113, 0.15); color: var(--ok); }
+.k-robot_questionnaire_replied { background: rgba(46, 204, 113, 0.20); color: var(--ok); }
+.k-robot_questionnaire_dismissed { background: rgba(139, 147, 167, 0.18); color: var(--muted); }
 .sig-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
 .sig-interview        { background: rgba(46, 204, 113, 0.20); color: var(--ok); }
 .sig-contact_request  { background: rgba(79, 140, 255, 0.20); color: var(--accent); }
@@ -920,6 +992,9 @@ function eventPreview(e){
     const tag = reason ? `<span class="reason-badge">${escapeHtml(reason)}</span>` : '';
     return tag + '🤖 ' + escapeHtml((p.last_question || '').slice(0, 220));
   }
+  if (e.kind === 'robot_questionnaire_handled') return '🤖 ✓ помечено как обработано вручную';
+  if (e.kind === 'robot_questionnaire_replied') return '🤖 📤 ответ отправлен через бота';
+  if (e.kind === 'robot_questionnaire_dismissed') return '🤖 ✗ отклонено (без ответа)';
   if (e.kind === 'skip') {
     const reason = p.reason || '';
     let label = '';
@@ -1591,7 +1666,10 @@ async function refreshRobotQuestionnaires(){
         <td>${link}</td>
         <td><span class="reason-badge">${escapeHtml(reason)}</span></td>
         <td class="preview"><b>${qLabel}</b></td>
-        <td><button class="btn-mini ok" data-act="resolve-robotq" data-id="${it.id}">✓ ответил</button></td>
+        <td style="white-space:nowrap">
+          <button class="btn-mini ok" data-act="resolve-robotq" data-id="${it.id}" title="Уже ответил вручную">✓ ответил</button>
+          <button class="btn-mini dismiss" data-act="dismiss-robotq" data-id="${it.id}" title="Не отвечать, убрать из очереди">✗ отказ</button>
+        </td>
       </tr>`;
     }).join('');
 
@@ -1600,6 +1678,15 @@ async function refreshRobotQuestionnaires(){
         ev.stopPropagation();
         const id = btn.dataset.id;
         const r = await fetch(`/api/robot-questionnaires/${id}/resolve`, { method: 'POST' });
+        if (r.ok) await refreshRobotQuestionnaires();
+        else alert('не удалось обновить статус');
+      });
+    });
+    tbody.querySelectorAll('button[data-act="dismiss-robotq"]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const id = btn.dataset.id;
+        const r = await fetch(`/api/robot-questionnaires/${id}/dismiss`, { method: 'POST' });
         if (r.ok) await refreshRobotQuestionnaires();
         else alert('не удалось обновить статус');
       });
@@ -1631,10 +1718,61 @@ function openRobotQModal(it){
     <div><b>Время:</b> ${escapeHtml(time)} · <b>Чат:</b> ${linkHtml}</div>
     <div style="margin-top:10px"><b>Вопросы анкеты (${qs.length}):</b></div>
     <div style="margin-top:6px">${qListHtml}</div>
+    <div style="margin-top:14px">
+      <b>Ответ для отправки через бота:</b>
+      <textarea id="robotq-reply-text" style="width:100%;min-height:120px;margin-top:6px;background:#0a0c10;color:#cad3e1;border:1px solid #2c3140;border-radius:6px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5" placeholder="Напишите ответ. Бот сходит в чат под вашей сессией и отправит сообщение."></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn-mini ok" data-act="robotq-send" data-id="${it.id}">📤 Отправить через бота</button>
+        <button class="btn-mini ok" data-act="robotq-handled" data-id="${it.id}">✓ Уже ответил вручную</button>
+        <button class="btn-mini dismiss" data-act="robotq-dismiss" data-id="${it.id}">✗ Отказаться</button>
+        <span id="robotq-status" class="muted" style="margin-left:auto;align-self:center"></span>
+      </div>
+    </div>
   `;
   $('#modal-body').classList.add('body');
   $('#modal-body').textContent = p.history_tail || '(история не сохранилась)';
   $('#modal').classList.add('show');
+
+  $('#modal-meta').querySelector('[data-act="robotq-send"]').addEventListener('click', async (ev) => {
+    const id = ev.target.dataset.id;
+    const txt = ($('#robotq-reply-text').value || '').trim();
+    if (!txt) { $('#robotq-status').textContent = 'Текст пустой'; return; }
+    ev.target.disabled = true;
+    $('#robotq-status').textContent = 'Отправляю…';
+    try {
+      const r = await fetch(`/api/robot-questionnaires/${id}/send`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: txt}),
+      });
+      const d = await r.json();
+      if (r.ok && d.ok) {
+        $('#robotq-status').textContent = '✓ отправлено';
+        await refreshRobotQuestionnaires();
+        setTimeout(() => $('#modal').classList.remove('show'), 900);
+      } else {
+        $('#robotq-status').textContent = '✗ ' + (d.error || 'ошибка');
+        ev.target.disabled = false;
+      }
+    } catch(e) {
+      $('#robotq-status').textContent = '✗ ' + e.message;
+      ev.target.disabled = false;
+    }
+  });
+
+  $('#modal-meta').querySelector('[data-act="robotq-handled"]').addEventListener('click', async (ev) => {
+    const id = ev.target.dataset.id;
+    const r = await fetch(`/api/robot-questionnaires/${id}/resolve`, { method: 'POST' });
+    if (r.ok) { await refreshRobotQuestionnaires(); $('#modal').classList.remove('show'); }
+    else $('#robotq-status').textContent = '✗ не удалось обновить';
+  });
+
+  $('#modal-meta').querySelector('[data-act="robotq-dismiss"]').addEventListener('click', async (ev) => {
+    const id = ev.target.dataset.id;
+    const r = await fetch(`/api/robot-questionnaires/${id}/dismiss`, { method: 'POST' });
+    if (r.ok) { await refreshRobotQuestionnaires(); $('#modal').classList.remove('show'); }
+    else $('#robotq-status').textContent = '✗ не удалось обновить';
+  });
 }
 
 async function tick(){
