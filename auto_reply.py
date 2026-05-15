@@ -705,6 +705,22 @@ try:
 except Exception:
     SELF_SIGNATURE_LINES: tuple[str, ...] = ()
 
+# Дополнительные текстовые маркеры собственных ручных сообщений в чате —
+# фразы, которые вы реально пишете рекрутёрам (отказы, вежливые формулы,
+# характерные обороты). Сравнение идёт по подстроке, case-insensitive.
+# Это последняя линия защиты на случай, если HH рендерит без CSS-маркера
+# и без author-поля, а геометрия даёт ложный 'left'. Пример содержимого
+# OWN_TEXT_MARKERS в profile.py:
+#   OWN_TEXT_MARKERS = (
+#       "вынужден вам отказать", "извините, не подойдёт",
+#       "с уважением, иван", "благодарю за предложение",
+#   )
+try:
+    from profile import OWN_TEXT_MARKERS as _OTM  # type: ignore
+    OWN_TEXT_MARKERS = tuple(s.strip().lower() for s in _OTM if s and s.strip())
+except Exception:
+    OWN_TEXT_MARKERS: tuple[str, ...] = ()
+
 
 def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:
     """Эвристика «этот текст — наш».
@@ -713,7 +729,10 @@ def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:
       • в тексте есть характерная строка из LETTER_SIGNATURE (подпись отклика),
       • в тексте упоминается одно из SELF_NAME_MARKERS (наше ФИО),
       • первые 60 символов совпадают с одним из наших УЖЕ ОТПРАВЛЕННЫХ ответов
-        в этом же чате (передаётся через prev_self_replies).
+        в этом же чате (передаётся через prev_self_replies),
+      • в тексте встречается одна из подстрок из OWN_TEXT_MARKERS — это
+        опциональные пользовательские маркеры для ручных сообщений в чате
+        (отказы, прощальные формулы), задаются в profile.py.
     """
     if not text:
         return False
@@ -721,6 +740,8 @@ def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:
     if any(l in tl for l in SELF_SIGNATURE_LINES):
         return True
     if any(m in tl for m in SELF_NAME_MARKERS):
+        return True
+    if any(m in tl for m in OWN_TEXT_MARKERS):
         return True
     for prev in prev_self_replies:
         head = (prev or "").strip()[:60].lower()
@@ -923,30 +944,39 @@ def _detect_role(
     side: str = "",
     text: str = "",
     prev_self_replies: tuple[str, ...] = (),
+    own_by_class: bool | None = None,
 ) -> str:
     """Определяет роль отправителя.
 
-    Раньше эвристика была: «нет author field → значит исходящее (мы)».
-    Но HH не всегда рендерит author и у ВХОДЯЩИХ сообщений HR-ботов
-    (системные шаблоны от компании), и тогда вопрос бота помечался как
-    «от себя» → Claude видел, что отвечать нечего, и возвращал SKIP.
-    Поэтому в первую очередь полагаемся на геометрию пузырька (side):
-    HH ставит исходящие справа, входящие слева.
+    Порядок приоритетов сигналов (от самого надёжного к самому шаткому):
+      1. own_by_class — CSS-класс пузыря/родителя (outgoing / own / --mine /
+         self-message) однозначно говорит, чьё сообщение. Самый надёжный
+         сигнал, потому что HH/Magritte рендерит исходящие иначе, чем входящие.
+      2. _text_is_own — content-override: подпись LETTER_SIGNATURE, ФИО из
+         SELF_NAME_MARKERS, совпадение с прошлыми ответами бота в этом чате.
+      3. side — геометрия пузыря относительно центра размаха.
+      4. author + SELF_NAME_MARKERS — fallback по тексту author-поля.
 
-    side: 'right' → мы, 'left' → собеседник, '' → неизвестно (fallback).
-
-    Дополнительно: после геометрической классификации запускаем
-    content-override через _text_is_own — если в тексте видна наша подпись
-    LETTER_SIGNATURE, наше ФИО или совпадение с известным прошлым ответом,
-    блок маркируется как SELF_ROLE независимо от side/author. Это лечит
-    кейс, когда HH рендерит наше сообщение в чате с author='Работодатель'
-    или без author-поля, и парсер ошибочно считает его входящим.
+    Раньше использовались только 2–4: у ручных коротких сообщений
+    пользователя через UI HH ни один не срабатывал (нет подписи, нет ФИО,
+    геометрия могла дать ложный 'left' при узком контейнере, author —
+    имя собеседника). В итоге сообщение типа «Извините, отказываюсь»
+    приписывалось работодателю и ловилось is_rejection как отказ нам.
     """
-    # Content-override (приоритет: совпадение с нашими маркерами всегда сильнее
-    # геометрии и author, потому что HH рендерит DOM неконсистентно).
+    # 1. CSS-класс — наиболее надёжный признак.
+    if own_by_class is True:
+        return SELF_ROLE
+    if own_by_class is False:
+        a0 = (author or "").strip()
+        if has_author_field and a0 and not any(m in a0.lower() for m in SELF_NAME_MARKERS):
+            return a0
+        return "Работодатель"
+
+    # 2. Content-override.
     if text and _text_is_own(text, prev_self_replies):
         return SELF_ROLE
 
+    # 3. Геометрия.
     a = (author or "").strip()
     if side == "right":
         return SELF_ROLE
@@ -954,7 +984,8 @@ def _detect_role(
         if has_author_field and a and not any(m in a.lower() for m in SELF_NAME_MARKERS):
             return a
         return "Работодатель"
-    # Fallback: геометрия не определилась — используем старую логику по author.
+
+    # 4. Fallback по author.
     if not has_author_field or not a:
         return SELF_ROLE
     if any(m in a.lower() for m in SELF_NAME_MARKERS):
@@ -984,9 +1015,11 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
     # уже собрали при обходе списка чатов (find_unread_chats).
     vacancy_title = (fallback_title or "").strip()
 
-    # Собираем все сообщения одним JS-вызовом: id, текст, автор и сторона
-    # пузырька (right=исходящее, left=входящее). Сторона определяется по
-    # геометрии центра пузырька относительно центра общего контейнера.
+    # Собираем все сообщения одним JS-вызовом: id, текст, автор, флаг own
+    # по CSS-классу (наиболее надёжный сигнал) и сторона пузырька (right=исходящее,
+    # left=входящее) — считаем mid не по родителю (он бывает шире окна и сбивает
+    # геометрию), а по реальному размаху самих пузырей: середина между min(left)
+    # и max(right). Если размах слишком мал — геометрия ненадёжна, side=''.
     raw = page.evaluate("""
         () => {
             const blocks = Array.from(document.querySelectorAll('[data-qa^="chatik-chat-message-"]'))
@@ -995,15 +1028,23 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
                     return !/-text$|-menu$/.test(qa);
                 });
             if (!blocks.length) return [];
-            // Контейнер: ближайший общий родитель, по которому считаем центр
-            let parent = blocks[0].parentElement;
-            for (let i=0; i<8 && parent; i++) {
-                const r = parent.getBoundingClientRect();
-                if (r.width > 300) break;
-                parent = parent.parentElement;
+
+            // Собираем геометрию пузырей и вычисляем середину по их размаху.
+            const rects = blocks.map(el => el.getBoundingClientRect()).filter(r => r.width > 0);
+            let minLeft = Infinity, maxRight = -Infinity;
+            for (const r of rects) {
+                if (r.left < minLeft) minLeft = r.left;
+                if (r.right > maxRight) maxRight = r.right;
             }
-            const pr = parent ? parent.getBoundingClientRect() : null;
-            const mid = pr ? pr.left + pr.width/2 : null;
+            const span = maxRight - minLeft;
+            const mid = span > 120 ? (minLeft + maxRight) / 2 : null;
+
+            // Регэкспы по className/data-атрибутам для определения «своих» пузырей.
+            // HH/Magritte рендерит выходящие сообщения с маркерами в имени класса
+            // или родителя — пробуем поймать самые распространённые шаблоны.
+            const OWN_RE = /(outgoing|own(?![a-z])|--mine|sent--own|sender--self|bubble--right|message--right|chat-message_owner|self-message)/i;
+            const THEIRS_RE = /(incoming|--theirs|sender--other|message--left|bubble--left)/i;
+
             return blocks.map(el => {
                 const qa = el.dataset.qa;
                 const id = qa.replace('chatik-chat-message-','');
@@ -1012,11 +1053,23 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
                 if (!text) text = (el.innerText || '').trim();
                 const authorEl = el.querySelector('[data-qa="chat-bubble-author-name"]');
                 const author = authorEl ? (authorEl.innerText || '').trim() : '';
+
+                // Объединяем классы самого блока и до 3-х предков — маркер часто на родителе.
+                let cls = el.className || '';
+                let p = el.parentElement;
+                for (let i=0; i<3 && p; i++) {
+                    cls += ' ' + (p.className || '');
+                    p = p.parentElement;
+                }
+                let ownByClass = null;
+                if (OWN_RE.test(cls)) ownByClass = true;
+                else if (THEIRS_RE.test(cls)) ownByClass = false;
+
                 const r = el.getBoundingClientRect();
                 const center = r.left + r.width/2;
                 let side = '';
                 if (mid !== null && r.width > 0) side = center > mid ? 'right' : 'left';
-                return {id, text, author, hasAuthor: !!authorEl, side};
+                return {id, text, author, hasAuthor: !!authorEl, side, ownByClass};
             });
         }
     """) or []
@@ -1035,12 +1088,14 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
         text = (m.get("text") or "").strip()
         if not text:
             continue
+        own = m.get("ownByClass")
         role = _detect_role(
             m.get("author") or "",
             bool(m.get("hasAuthor")),
             m.get("side") or "",
             text=text,
             prev_self_replies=prev_self,
+            own_by_class=(own if isinstance(own, bool) else None),
         )
         items.append((int(msg_id), role, text))
 

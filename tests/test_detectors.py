@@ -133,5 +133,66 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(ar._looks_like_questionnaire_question(""))
 
 
+class DetectRoleTests(unittest.TestCase):
+    def test_own_by_class_wins_over_author(self) -> None:
+        # CSS-маркер own=True перебивает любой author — это случай ручного
+        # сообщения пользователя, которое HH отрендерил с author='Лидия'.
+        role = ar._detect_role(
+            author="Лидия",
+            has_author_field=True,
+            side="left",
+            text="Извините, вынужден отказать",
+            own_by_class=True,
+        )
+        self.assertEqual(role, ar.SELF_ROLE)
+
+    def test_own_by_class_false_keeps_author(self) -> None:
+        role = ar._detect_role(
+            author="Лидия",
+            has_author_field=True,
+            side="right",
+            text="?",
+            own_by_class=False,
+        )
+        self.assertEqual(role, "Лидия")
+
+    def test_short_question_mark_no_own_signal(self) -> None:
+        # «?» от пользователя — нет ни ФИО, ни подписи, ни prev. Без own_by_class
+        # детектор по author вернёт собеседника — это известная слабость,
+        # которая лечится правильным own_by_class из CSS-классов парсера.
+        role = ar._detect_role(
+            author="Лидия",
+            has_author_field=True,
+            side="left",
+            text="?",
+        )
+        self.assertEqual(role, "Лидия")
+
+    def test_own_text_marker_from_profile(self) -> None:
+        # Имитируем OWN_TEXT_MARKERS — пользователь добавил «вынужден отказать»
+        # в profile.py. Сообщение должно атрибутироваться нам, даже если author=Лидия
+        # и геометрия дала 'left'.
+        orig = ar.OWN_TEXT_MARKERS
+        try:
+            ar.OWN_TEXT_MARKERS = ("вынужден вам отказать",)
+            role = ar._detect_role(
+                author="Лидия",
+                has_author_field=True,
+                side="left",
+                text="Извините, вынужден вам отказать — очень низкая оплата.",
+            )
+            self.assertEqual(role, ar.SELF_ROLE)
+        finally:
+            ar.OWN_TEXT_MARKERS = orig
+
+    def test_geometry_right_means_self(self) -> None:
+        role = ar._detect_role(author="", has_author_field=False, side="right", text="ok")
+        self.assertEqual(role, ar.SELF_ROLE)
+
+    def test_no_author_no_side_fallback_self(self) -> None:
+        role = ar._detect_role(author="", has_author_field=False, side="", text="hi")
+        self.assertEqual(role, ar.SELF_ROLE)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
