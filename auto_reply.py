@@ -31,6 +31,7 @@ from auto_apply_template import (
     _acquire_singleton_lock,
 )
 import metrics
+import notify
 
 load_dotenv()
 metrics.init_db()
@@ -38,6 +39,13 @@ metrics.init_db()
 DELAY_BETWEEN_CHATS = 8
 MAX_CHATS_PER_RUN = 30
 CHATS_URL = "https://hh.ru/chat"
+
+# Минимальный интервал между повторными генерациями в одном и том же чате,
+# если содержимое последнего входящего блока не изменилось. Защита от того,
+# что watch-цикл при коротком интервале (или ручной перезапуск) повторно
+# дёргает Claude по тому же чату — токены сжигаются, рекрутёр получает почти
+# тот же ответ ещё раз. 0 = отключить cooldown.
+REPLY_COOLDOWN_SEC = int(os.getenv("HH_REPLY_COOLDOWN_SEC", "600"))
 
 DRY_RUN = "--dry-run" in sys.argv
 WATCH_MODE = "--watch" in sys.argv
@@ -150,6 +158,44 @@ def get_last_self_replies(chat_url: str, n: int = 3) -> list[str]:
     return out
 
 
+def get_last_processed_meta(chat_url: str) -> tuple[str, float, str] | None:
+    """(kind, ts, history_tail) последнего события, которым мы уже отреагировали
+    на этот чат — reply, robot_questionnaire или skip-cooldown. None если такого
+    нет. Используется для cooldown: если этот же входящий блок мы недавно уже
+    видели и отметили, повторно дёргать Claude нет смысла."""
+    if not chat_url:
+        return None
+    try:
+        with sqlite3.connect(metrics.DB_PATH, timeout=10) as c:
+            row = c.execute(
+                """SELECT kind, ts, payload_json FROM events
+                   WHERE chat_url = ?
+                     AND kind IN ('reply', 'robot_questionnaire', 'skip')
+                   ORDER BY ts DESC LIMIT 1""",
+                (chat_url,),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    kind, ts, pj = row
+    try:
+        tail = (json.loads(pj or "{}") or {}).get("history_tail", "")
+    except Exception:
+        tail = ""
+    return str(kind), float(ts), tail or ""
+
+
+def _last_incoming_block(history: str) -> str:
+    """Текст последнего блока истории, который НЕ от нас (для сравнения cooldown)."""
+    if not history:
+        return ""
+    for b in reversed([x.strip() for x in history.strip().split("\n\n") if x.strip()]):
+        if not b.startswith(SELF_ROLE_PREFIX):
+            return b
+    return ""
+
+
 def get_overused_projects_in_chat(chat_url: str) -> list[str]:
     """Имена проектов, которые в наших прошлых reply в этом чате
     встречались ≥ PROJECT_OVERUSE_THRESHOLD раз суммарно. Свежие — первыми."""
@@ -194,6 +240,7 @@ SYSTEM_PROMPT = """Ты помогаешь соискателю отвечать
 - Если последнее сообщение от соискателя (то есть отвечать не на что), верни одно слово: SKIP
 - Если сообщение требует решения, которое только сам соискатель может принять (зарплата ниже ожиданий, релокация, конкретные условия), верни: SKIP
 - Длина: 3–5 предложений. Не больше. Если получается длиннее — сокращай, оставляй главное.
+- РЕЖИМ БИНАРНОГО ВОПРОСА: если последний вопрос работодателя — это бинарный/фактический («Был ли опыт X?», «Есть ли Y?», «Знакомы ли с Z?», «Готовы ли к удалёнке?», «Сколько лет опыта?», «Какой стек?», «Какие RPS поддерживали?», «Удобно ли N часов?») — ответ должен быть ≤ 25 слов, 1–2 предложения. Первое слово — «Да», «Нет» или конкретная цифра/название инструмента. Без встречного вопроса в конце. Один пример из профиля, без перечислений нескольких проектов. Такой стиль читается как живой инженер; длинная простыня — главный признак ChatGPT-копипасты, которую палит рекрутёр на бинарных вопросах.
 - ОДИН ПРОЕКТ НА ОТВЕТ. Не больше. Выбирай ОДИН наиболее релевантный проект и раскрывай его. Структура «В A… В B… В C…» через перечисление 3–4 проектов в одном сообщении — главный признак машинного текста, рекрутёры это палят. Исключение: если вопрос явно про несколько разных доменов (A или B, в каких ролях работал на разных стеках) — допустимо ДВА проекта, не больше.
 - ЧИСЛА И МЕТРИКИ: конкретные показатели из профиля (например «95% coverage», «6→12 FPS», «16+ лет») используй ТОЛЬКО когда вопрос прямо касается этой метрики (вопрос про тесты → про coverage; вопрос про опыт → про годы). Не вставляй одну и ту же цифру в каждый ответ для «вес» — это обесценивает её.
 - ФИНАЛЬНЫЙ ВОПРОС — НЕ ОБЯЗАТЕЛЕН. Заканчивать каждое сообщение встречным вопросом — устойчивый паттерн, который выдаёт бота. Иногда заверши коротким утверждением, предложением следующего шага («покажу на созвоне», «готов прислать ссылку на проект») или вообще точкой. Вопрос — только когда он реально нужен по контексту.
@@ -243,6 +290,22 @@ SYSTEM_PROMPT = """Ты помогаешь соискателю отвечать
 "В крупном госпроекте строил «Единое окно» — multi-tenant платформу с RBAC, real-time нотификациями и сложной бизнес-логикой между ролями: всё это та же основа, что и в маркетплейсе. По тревел-специфике детали удобнее обсудить на созвоне с конкретными кейсами на руках. Какие именно архитектурные вызовы в вашем маркетплейсе сейчас приоритет?"
 
 Заметь: ни «нет опыта», ни «не работал» — про незнакомый домен мягко переводим на созвон.
+
+ПРИМЕРЫ БИНАРНОГО РЕЖИМА (вопрос — фактический/да-нет):
+
+❌ ПЛОХО (вопрос: «Был ли опыт shared memory?»):
+"В одном из проектов реализовал inter-process communication через Redis для мультитенантной изоляции и shared state management — кэширование квот, billing, аналитики. Параллельно оптимизировал обработку видеопотоков через асинхронные очереди (RabbitMQ + Celery), что требовало синхронизации доступа к shared inference-ресурсам. Какие конкретные сценарии shared memory критичны в вашей системе?"
+(80 слов, два проекта, counter-question — выдаёт бот.)
+
+✅ ХОРОШО (тот же вопрос):
+"Да, через multiprocessing.shared_memory — передавал кадры между воркерами в видеоаналитике."
+(11 слов, ответ — сразу. Один инструмент, один контекст.)
+
+❌ ПЛОХО (вопрос: «Какие RPS поддерживали?»):
+"В одном AI-проекте обрабатывал multi-provider LLM-запросы с маршрутизацией между провайдерами — система спроектирована на масштабируемость через async/await и connection pooling. В self-hosted платформе поддерживал мультитенантные inference-запросы с graceful degradation. Какие целевые RPS в вашем проекте?"
+
+✅ ХОРОШО:
+"В пике ~500 RPS на inference-эндпоинт, типично 100–200."
 """
 
 
@@ -321,20 +384,61 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
                 print("    ⏭️  Содержимое последнего блока совпадает с нашим текстом — SKIP")
                 return "SKIP"
 
+    # Cooldown: если этот же входящий блок мы уже обрабатывали недавно
+    # (reply / robot_questionnaire / предыдущий cooldown-skip), нет смысла дёргать
+    # Claude повторно — токены потратятся, рекрутёр получит почти тот же текст.
+    if chat_url and REPLY_COOLDOWN_SEC > 0:
+        meta = get_last_processed_meta(chat_url)
+        if meta:
+            prev_kind, prev_ts, prev_tail = meta
+            age = time.time() - prev_ts
+            if age < REPLY_COOLDOWN_SEC:
+                cur_last = _last_incoming_block(chat_history)
+                prev_last = _last_incoming_block(prev_tail)
+                if cur_last and cur_last == prev_last:
+                    print(f"    ⏳ Cooldown {int(age)}s · последний входящий не изменился — SKIP")
+                    metrics.log_event(
+                        kind="skip",
+                        vacancy=vacancy_title,
+                        chat_url=chat_url,
+                        payload={
+                            "reason": "cooldown",
+                            "age_sec": int(age),
+                            "prev_kind": prev_kind,
+                            "history_len": len(chat_history),
+                            "history_tail": chat_history[-2000:] if chat_history else "",
+                        },
+                    )
+                    return "SKIP"
+
     # Робот-анкета: автобот HH присылает серию однотипных вопросов («Был ли опыт…?»),
     # которые уходят работодателю в summary. Любой авто-ответ от Claude тут — риск:
     # неверная связка вскроется на оффере, отозвать нельзя. Кидаем в отдельную
     # очередь и пусть отвечает человек.
     robot_flag, robot_reason = is_robot_questionnaire(chat_history)
     if robot_flag:
+        questions: list[str] = []
         last_question = ""
         if chat_history:
-            for b in reversed([x.strip() for x in chat_history.strip().split("\n\n") if x.strip()]):
-                if not b.startswith(SELF_ROLE_PREFIX):
-                    _, body = _strip_role_prefix(b)
-                    last_question = body
-                    break
-        print(f"    🤖 Робот-анкета ({robot_reason}) — в отдельную очередь, ответит человек")
+            for b in [x.strip() for x in chat_history.strip().split("\n\n") if x.strip()]:
+                role, body = _strip_role_prefix(b)
+                if role == SELF_ROLE or not body:
+                    continue
+                body_norm = body.strip()
+                # «Здравствуйте» и прочие приветствия — не вопросы анкеты.
+                lb = body_norm.lower()
+                if len(body_norm.split()) < 3 and not body_norm.endswith("?"):
+                    continue
+                if any(g in lb for g in ("здравствуйте", "добрый день", "спасибо за интерес", "начнем")):
+                    if "?" not in body_norm:
+                        continue
+                questions.append(body_norm[:500])
+            if questions:
+                last_question = questions[-1]
+        print(
+            f"    🤖 Робот-анкета ({robot_reason}) · {len(questions)} вопрос(ов) "
+            f"— в отдельную очередь, ответит человек"
+        )
         metrics.log_event(
             kind="robot_questionnaire",
             vacancy=vacancy_title,
@@ -342,10 +446,37 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
             payload={
                 "reason": robot_reason,
                 "last_question": last_question[:600],
+                "questions": questions,
+                "questions_count": len(questions),
                 "history_len": len(chat_history),
                 "history_tail": chat_history[-2000:] if chat_history else "",
             },
         )
+        # Дедуп нотификаций: если вчера уже шлали тегу о ЭТОЙ анкете — не дублируем.
+        # Простой признак — был ли любой robot_questionnaire по этому чату ранее.
+        # Полная дедупликация делается на стороне БД (видна в дашборде).
+        try:
+            with sqlite3.connect(metrics.DB_PATH, timeout=5) as c:
+                row = c.execute(
+                    """SELECT COUNT(*) FROM events
+                       WHERE kind = 'robot_questionnaire' AND chat_url = ?""",
+                    (chat_url,),
+                ).fetchone()
+                prior_count = int(row[0] if row else 0)
+        except Exception:
+            prior_count = 0
+        # На первое срабатывание шлём тегу, на повторы для того же чата — нет
+        # (по сути это уведомление «появилась новая анкета», а не «новый вопрос
+        # в существующей»). Если в payload.questions выросло количество — это
+        # видно в дашборде по обновлённой свежей записи.
+        if prior_count <= 1:
+            notify.notify_robot_questionnaire(
+                reason=robot_reason,
+                vacancy=vacancy_title,
+                chat_url=chat_url,
+                questions=questions,
+                last_question=last_question,
+            )
         return "SKIP"
 
     overused = get_overused_projects_in_chat(chat_url)
@@ -1051,6 +1182,21 @@ def main():
                             "history_len": len(payload["history"]),
                             "history_tail": payload["history"][-2000:],
                         },
+                    )
+                    # Последний блок от работодателя — для сниппета в нотификации.
+                    last_hr = ""
+                    for b in reversed(
+                        [x.strip() for x in payload["history"].split("\n\n") if x.strip()]
+                    ):
+                        if not b.startswith(SELF_ROLE_PREFIX):
+                            _, last_hr = _strip_role_prefix(b)
+                            break
+                    notify.notify_positive_signal(
+                        signal_type=sig_type,
+                        trigger=trigger,
+                        vacancy=payload["title"],
+                        chat_url=chat_url,
+                        last_message=last_hr,
                     )
                     stats["skipped"] += 1
                     continue

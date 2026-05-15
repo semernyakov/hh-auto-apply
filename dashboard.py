@@ -236,6 +236,19 @@ def api_robot_questionnaires(limit: int = 200) -> JSONResponse:
     return JSONResponse({"questionnaires": metrics.get_robot_questionnaires(limit=limit)})
 
 
+@app.get("/api/conversion")
+def api_conversion(days: int = 60) -> JSONResponse:
+    return JSONResponse(metrics.get_reply_conversion(days=days))
+
+
+@app.post("/api/robot-questionnaires/{event_id}/resolve")
+def api_robot_questionnaire_resolve(event_id: int) -> JSONResponse:
+    ok = metrics.resolve_event(
+        event_id, "robot_questionnaire_handled", expected_kind="robot_questionnaire"
+    )
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
 @app.post("/api/positive/{event_id}/resolve")
 def api_positive_resolve(event_id: int) -> JSONResponse:
     ok = metrics.resolve_event(event_id, "positive_signal_handled", expected_kind="positive_signal")
@@ -570,6 +583,7 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     <div class="card"><div class="label">Всего · стоимость</div><div class="value" id="m-total-cost">$0.0000</div><div class="sub" id="m-total-tokens">tokens 0 → 0</div></div>
     <div class="card"><div class="label">Reply / Apply</div><div class="value" id="m-rep-app">0 / 0</div><div class="sub">в чат / в отклик</div></div>
     <div class="card"><div class="label">Skip / Error</div><div class="value" id="m-skip-err">0 / 0</div><div class="sub">пропущено / ошибок</div></div>
+    <div class="card"><div class="label">Конверсия ответов</div><div class="value" id="m-conv-pct">— %</div><div class="sub" id="m-conv-sub">за 60 дней · нет данных</div></div>
   </div>
 
   <section>
@@ -670,9 +684,9 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     <h2>🤖 Анкеты автоботов — ждут ручного ответа <span class="muted" id="robotq-count" style="font-weight:400;text-transform:none;letter-spacing:0">— 0</span></h2>
     <table id="robotq" class="events-table">
       <thead><tr>
-        <th>Когда</th><th>Вакансия / чат</th><th>Причина</th><th>Последний вопрос</th>
+        <th>Когда</th><th>Вакансия / чат</th><th>Причина</th><th>Вопросы</th><th>Действия</th>
       </tr></thead>
-      <tbody><tr><td colspan="4" class="muted">пусто</td></tr></tbody>
+      <tbody><tr><td colspan="5" class="muted">пусто</td></tr></tbody>
     </table>
   </section>
 
@@ -846,6 +860,22 @@ async function refreshStatus(){
     setRun('reply', lr.watch, lim.reply_interval_sec);
     setRun('boost', lr.boost_watch, lim.boost_interval_sec);
     $('#lim-boost-interval').textContent = fmtDuration(lim.boost_interval_sec);
+  } catch(e){ /* ignore */ }
+
+  // Конверсия — отдельный запрос, не блокирует основной refresh.
+  try {
+    const r = await fetch('/api/conversion?days=60'); const c = await r.json();
+    const total = c.total_chats_replied || 0;
+    const pct = c.positive_pct || 0;
+    $('#m-conv-pct').textContent = total ? (pct.toFixed(1) + ' %') : '— %';
+    if (total) {
+      $('#m-conv-sub').textContent =
+        `за ${c.days || 60} дн · ${c.to_positive}/${total} → положит.` +
+        (c.to_rejection ? ` · ${c.to_rejection} отказов` : '') +
+        (c.pending ? ` · ${c.pending} без ответа` : '');
+    } else {
+      $('#m-conv-sub').textContent = `за ${c.days || 60} дн · нет данных`;
+    }
   } catch(e){ /* ignore */ }
 }
 
@@ -1539,7 +1569,7 @@ async function refreshRobotQuestionnaires(){
     $('#robotq-count').textContent = '— ' + items.length;
     const tbody = $('#robotq tbody');
     if (!items.length){
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">пока пусто</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">пока пусто</td></tr>';
       return;
     }
     tbody.innerHTML = items.map(it => {
@@ -1547,18 +1577,33 @@ async function refreshRobotQuestionnaires(){
       const url = it.chat_url || '';
       const vac = it.vacancy || '(чат)';
       const reason = (p.reason || '').split(':')[0] || '—';
-      const q = p.last_question || lastHrMessage(p.history_tail || '');
+      const qs = Array.isArray(p.questions) ? p.questions : [];
+      const cnt = p.questions_count || qs.length || (p.last_question ? 1 : 0);
+      const lastQ = p.last_question || (qs.length ? qs[qs.length - 1] : '');
       const link = url
         ? `<a class="row-link" href="${escapeHtml(url)}" target="_blank">${escapeHtml(vac)}</a>`
         : escapeHtml(vac);
+      const qLabel = cnt
+        ? `<span class="muted">${cnt} вопр.</span> · ${escapeHtml((lastQ || '').slice(0, 200))}`
+        : escapeHtml((lastQ || '').slice(0, 200));
       return `<tr data-id="${it.id}">
         <td class="muted">${fmtAgo(it.ts, Date.now()/1000)}</td>
         <td>${link}</td>
         <td><span class="reason-badge">${escapeHtml(reason)}</span></td>
-        <td class="preview"><b>${escapeHtml((q || '').slice(0, 280))}</b></td>
+        <td class="preview"><b>${qLabel}</b></td>
+        <td><button class="btn-mini ok" data-act="resolve-robotq" data-id="${it.id}">✓ ответил</button></td>
       </tr>`;
     }).join('');
 
+    tbody.querySelectorAll('button[data-act="resolve-robotq"]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const id = btn.dataset.id;
+        const r = await fetch(`/api/robot-questionnaires/${id}/resolve`, { method: 'POST' });
+        if (r.ok) await refreshRobotQuestionnaires();
+        else alert('не удалось обновить статус');
+      });
+    });
     tbody.querySelectorAll('tr[data-id]').forEach(tr => {
       tr.addEventListener('click', () => {
         const id = parseInt(tr.dataset.id);
@@ -1574,11 +1619,18 @@ function openRobotQModal(it){
   const url = it.chat_url || '';
   const time = new Date(it.ts * 1000).toLocaleString('ru-RU');
   const linkHtml = url ? `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(url)}</a>` : '<span class="muted">—</span>';
+  const qs = Array.isArray(p.questions) ? p.questions : (p.last_question ? [p.last_question] : []);
+  const qListHtml = qs.length
+    ? '<ol style="margin:0;padding-left:18px">' +
+        qs.map(q => `<li style="margin-bottom:6px">${escapeHtml(q)}</li>`).join('') +
+      '</ol>'
+    : '<span class="muted">(вопросы не сохранились)</span>';
   $('#modal-title').textContent = it.vacancy || 'анкета автобота';
   $('#modal-meta').innerHTML = `
     <div><b>Причина:</b> ${escapeHtml(p.reason || '—')}</div>
     <div><b>Время:</b> ${escapeHtml(time)} · <b>Чат:</b> ${linkHtml}</div>
-    <div><b>Последний вопрос:</b> ${escapeHtml(p.last_question || '—')}</div>
+    <div style="margin-top:10px"><b>Вопросы анкеты (${qs.length}):</b></div>
+    <div style="margin-top:6px">${qListHtml}</div>
   `;
   $('#modal-body').classList.add('body');
   $('#modal-body').textContent = p.history_tail || '(история не сохранилась)';
@@ -1616,5 +1668,11 @@ if __name__ == "__main__":
 
     host = os.getenv("HH_DASHBOARD_HOST", "127.0.0.1")
     port = int(os.getenv("HH_DASHBOARD_PORT", "8765"))
-    print(f"\n🌐 Дашборд запущен: http://{host}:{port}\n")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # HH_DEV_RELOAD=1 — uvicorn перечитывает dashboard.py при изменениях,
+    # удобно когда правишь HTML/JS внутри HTML_TEMPLATE. В проде не использовать.
+    reload = os.getenv("HH_DEV_RELOAD", "").lower() in ("1", "true", "yes")
+    print(f"\n🌐 Дашборд запущен: http://{host}:{port}" + (" [reload]" if reload else "") + "\n")
+    if reload:
+        uvicorn.run("dashboard:app", host=host, port=port, log_level="warning", reload=True)
+    else:
+        uvicorn.run(app, host=host, port=port, log_level="warning")

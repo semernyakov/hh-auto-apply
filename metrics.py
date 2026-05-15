@@ -303,6 +303,54 @@ def get_chat_history(chat_url: str) -> list[dict[str, Any]]:
     return out
 
 
+def get_reply_conversion(days: int = 60) -> dict[str, Any]:
+    """Конверсия наших ответов в чатах: сколько привели к положительному сигналу
+    (приглашение/контакт/на рассмотрении) vs к отказу vs остались без ответа.
+
+    Окно = последние `days` дней. Под «привели» понимается: для chat_url, где
+    был хотя бы один наш reply, ищем positive_signal / rejection с ts > времени
+    первого reply в этом чате. Один chat — одна запись в знаменателе.
+    """
+    since = time.time() - days * 86400
+    with _conn() as c:
+        row = c.execute(
+            """WITH replied AS (
+                 SELECT chat_url, MIN(ts) AS first_reply_ts
+                 FROM events
+                 WHERE kind = 'reply' AND chat_url <> '' AND ts >= ?
+                 GROUP BY chat_url
+               ),
+               followup AS (
+                 SELECT r.chat_url,
+                        MAX(CASE WHEN e.kind = 'positive_signal' AND e.ts > r.first_reply_ts THEN 1 ELSE 0 END) AS pos,
+                        MAX(CASE WHEN e.kind = 'rejection'       AND e.ts > r.first_reply_ts THEN 1 ELSE 0 END) AS rej
+                 FROM replied r
+                 LEFT JOIN events e ON e.chat_url = r.chat_url
+                 GROUP BY r.chat_url
+               )
+               SELECT
+                 COUNT(*)                                              AS total,
+                 COALESCE(SUM(pos), 0)                                 AS to_positive,
+                 COALESCE(SUM(rej), 0)                                 AS to_rejection,
+                 COALESCE(SUM(CASE WHEN pos=0 AND rej=0 THEN 1 END), 0) AS pending
+               FROM followup""",
+            (since,),
+        ).fetchone()
+    total = int(row["total"] or 0)
+    pos = int(row["to_positive"] or 0)
+    rej = int(row["to_rejection"] or 0)
+    pending = int(row["pending"] or 0)
+    return {
+        "days": days,
+        "total_chats_replied": total,
+        "to_positive": pos,
+        "to_rejection": rej,
+        "pending": pending,
+        "positive_pct": round(pos * 100.0 / total, 1) if total else 0.0,
+        "rejection_pct": round(rej * 100.0 / total, 1) if total else 0.0,
+    }
+
+
 def get_rate_stats() -> dict[str, Any]:
     """Активность по временным окнам + последние запуски воркеров.
 
