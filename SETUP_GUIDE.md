@@ -122,7 +122,7 @@ export HH_APPLY_INTERVAL_SEC=10800      # 3 часа между проходам
 export HH_WATCH_INTERVAL_SEC=1800       # 30 минут между проверками чатов
 export HH_BOOST_INTERVAL_SEC=14700      # ~4 часа между попытками подъёма
 export HH_ALL_CHATS=1                   # обходить все чаты, не только непрочитанные (для отладки)
-export HH_REPLY_COOLDOWN_SEC=600        # если последний входящий блок не изменился, Claude не дёргается повторно
+export HH_REPLY_COOLDOWN_SEC=21600      # 6 ч — защита от карусели повторных Claude-вызовов (если работодатель ничего нового не написал)
 export HH_DEV_RELOAD=1                  # uvicorn --reload для дашборда (только dev)
 ```
 

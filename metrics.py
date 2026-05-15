@@ -303,6 +303,31 @@ def get_chat_history(chat_url: str) -> list[dict[str, Any]]:
     return out
 
 
+def get_cooldown_savings(days: int = 30) -> dict[str, Any]:
+    """Сколько раз cooldown подавил повторный Claude-вызов и сколько токенов/$
+    это сэкономило (грубая оценка: при срабатывании cooldown НЕ был сделан
+    запрос к Claude; средний размер запроса в чате этой длины ~5500 input + 5 output
+    токенов ~ $0.0055 на Haiku 4.5). Считается за окно `days` дней.
+    """
+    since = time.time() - days * 86400
+    with _conn() as c:
+        row = c.execute(
+            """SELECT COUNT(*) AS n
+               FROM events
+               WHERE kind='skip' AND ts >= ?
+                 AND payload_json LIKE '%"reason": "cooldown"%'""",
+            (since,),
+        ).fetchone()
+    cnt = int(row["n"] or 0)
+    # Усреднённая стоимость одного вызова Claude Haiku 4.5 на типичном чат-запросе.
+    avg_cost_per_call_usd = 0.0055
+    return {
+        "days": days,
+        "cooldown_skips": cnt,
+        "saved_usd": round(cnt * avg_cost_per_call_usd, 4),
+    }
+
+
 def get_reply_conversion(days: int = 60) -> dict[str, Any]:
     """Конверсия наших ответов в чатах: сколько привели к положительному сигналу
     (приглашение/контакт/на рассмотрении) vs к отказу vs остались без ответа.

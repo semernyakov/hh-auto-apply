@@ -241,6 +241,11 @@ def api_conversion(days: int = 60) -> JSONResponse:
     return JSONResponse(metrics.get_reply_conversion(days=days))
 
 
+@app.get("/api/cooldown-savings")
+def api_cooldown_savings(days: int = 30) -> JSONResponse:
+    return JSONResponse(metrics.get_cooldown_savings(days=days))
+
+
 @app.post("/api/robot-questionnaires/{event_id}/resolve")
 def api_robot_questionnaire_resolve(event_id: int) -> JSONResponse:
     ok = metrics.resolve_event(
@@ -656,6 +661,7 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     <div class="card"><div class="label">Reply / Apply</div><div class="value" id="m-rep-app">0 / 0</div><div class="sub">в чат / в отклик</div></div>
     <div class="card"><div class="label">Skip / Error</div><div class="value" id="m-skip-err">0 / 0</div><div class="sub">пропущено / ошибок</div></div>
     <div class="card"><div class="label">Конверсия ответов</div><div class="value" id="m-conv-pct">— %</div><div class="sub" id="m-conv-sub">за 60 дней · нет данных</div></div>
+    <div class="card"><div class="label">🛡 Cooldown сэкономил</div><div class="value" id="m-cooldown-saved">$0.0000</div><div class="sub" id="m-cooldown-sub">за 30 дней · 0 вызовов</div></div>
   </div>
 
   <section>
@@ -948,6 +954,14 @@ async function refreshStatus(){
     } else {
       $('#m-conv-sub').textContent = `за ${c.days || 60} дн · нет данных`;
     }
+  } catch(e){ /* ignore */ }
+
+  // Cooldown savings.
+  try {
+    const r = await fetch('/api/cooldown-savings?days=30'); const cs = await r.json();
+    $('#m-cooldown-saved').textContent = fmtCost(cs.saved_usd || 0);
+    $('#m-cooldown-sub').textContent =
+      `за ${cs.days || 30} дн · ${fmtNum(cs.cooldown_skips || 0)} повтор. вызов(а/ов) подавлено`;
   } catch(e){ /* ignore */ }
 }
 
