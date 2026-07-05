@@ -112,6 +112,12 @@ def _seconds_until_work_hours() -> int:
 # по нашему профилю — добавляем как ещё один источник к SEARCH_QUERIES.
 RESUME_ID = os.getenv("HH_RESUME_ID", "")
 
+# Мы ищем только удалёнку. При True офисные вакансии (сработал ON_SITE_TRIGGERS)
+# сразу пропускаются (skip), а не копятся в ручной очереди pending_manual.
+# Чтобы вернуться к разбору офисных вручную (на будущее, если начнём смотреть
+# и офис) — задай HH_SKIP_ON_SITE=0.
+SKIP_ON_SITE = os.getenv("HH_SKIP_ON_SITE", "1").strip().lower() not in ("0", "false", "no", "")
+
 # Путь к файлу сессии
 N8N_FILES_DIR = os.getenv("N8N_FILES_DIR", os.path.expanduser("~/.n8n-files"))
 SESSION_FILE = os.path.join(N8N_FILES_DIR, "hh_session.json")
@@ -223,10 +229,21 @@ ON_SITE_TRIGGERS = [
 ]
 
 
-def needs_manual_review(description: str, title: str = "") -> list[str]:
-    """Возвращает список совпавших триггеров. Пустой список = можно автоотклик."""
+def on_site_triggers(description: str, title: str = "") -> list[str]:
+    """Совпавшие офисные триггеры (не удалёнка). См. SKIP_ON_SITE."""
     text = (description or "").lower() + " " + (title or "").lower()
-    return [t for t in MANUAL_TRIGGERS + ON_SITE_TRIGGERS if t in text]
+    return [t for t in ON_SITE_TRIGGERS if t in text]
+
+
+def needs_manual_review(description: str, title: str = "") -> list[str]:
+    """Возвращает список совпавших триггеров. Пустой список = можно автоотклик.
+
+    Офисные триггеры сюда НЕ входят — они обрабатываются отдельно (см.
+    on_site_triggers / SKIP_ON_SITE): при SKIP_ON_SITE=True офис идёт в skip,
+    иначе добавляется к ручной очереди на этапе обработки вакансии.
+    """
+    text = (description or "").lower() + " " + (title or "").lower()
+    return [t for t in MANUAL_TRIGGERS if t in text]
 
 
 # Если в названии вакансии явно указана роль, на которую соискатель не претендует,
@@ -835,7 +852,30 @@ def main():
 
                     description = get_vacancy_description(page, vacancy['url'])
 
+                    on_site = on_site_triggers(description, vacancy['title'])
+                    if on_site and SKIP_ON_SITE:
+                        print(f"      🏢 Не удалёнка ({', '.join(on_site[:2])}) — пропускаю")
+                        if metrics_sink:
+                            metrics_sink.log_event(
+                                kind="skip",
+                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                chat_url=vacancy['url'],
+                                payload={
+                                    "reason": "on_site",
+                                    "title": vacancy['title'],
+                                    "employer": vacancy['employer'],
+                                    "vacancy_url": vacancy['url'],
+                                    "triggers": on_site,
+                                },
+                            )
+                            _remember_in_index(vacancy)
+                        stats['skipped'] += 1
+                        continue
+
                     triggers = needs_manual_review(description, vacancy['title'])
+                    # SKIP_ON_SITE=False: возвращаем офисные в ручную очередь (старое поведение).
+                    if on_site and not SKIP_ON_SITE:
+                        triggers = triggers + on_site
                     if triggers:
                         print(f"      🚩 В очередь на ручной отклик: {', '.join(triggers[:3])}")
                         if metrics_sink:
