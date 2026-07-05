@@ -12,6 +12,7 @@ HH.ru Автооткликатор
 import fcntl
 import json
 import os
+import random
 import sys
 import time
 from anthropic import Anthropic
@@ -66,10 +67,45 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or "YOUR_ANTHROPIC_API_KEY"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 # Сколько страниц парсить для каждого запроса (1 страница = ~20 вакансий)
-MAX_PAGES = 3
+MAX_PAGES = int(os.getenv("HH_MAX_PAGES", "2"))
 
-# Пауза между откликами (секунды), не ставь меньше 5, иначе забанят
-DELAY_BETWEEN_APPLIES = 7
+# Пауза между откликами — РАНДОМНЫЙ диапазон (сек). Фиксированная пауза — маркер
+# бота: живой человек читает вакансию разное время. Не ставь меньше ~15с.
+DELAY_APPLY_MIN = int(os.getenv("HH_DELAY_APPLY_MIN", "25"))
+DELAY_APPLY_MAX = int(os.getenv("HH_DELAY_APPLY_MAX", "50"))
+
+# Суточный лимит откликов (жёсткий потолок против бана по объёму). За окно 24ч.
+MAX_APPLIES_PER_DAY = int(os.getenv("HH_MAX_APPLIES_PER_DAY", "25"))
+
+# Рабочие часы (локальное время сервера, МСК) [start, end) — вне окна бот НЕ
+# откликается: массовые отклики ночью — яркий признак бота.
+WORK_HOUR_START = int(os.getenv("HH_WORK_HOUR_START", "9"))
+WORK_HOUR_END = int(os.getenv("HH_WORK_HOUR_END", "21"))
+
+# Джиттер интервала между обходами (доля): реальная пауза = interval * (1 ± JITTER).
+APPLY_INTERVAL_JITTER = float(os.getenv("HH_APPLY_INTERVAL_JITTER", "0.25"))
+
+
+def _apply_delay() -> float:
+    """Рандомная пауза между откликами — человекоподобность против антибана."""
+    return random.uniform(DELAY_APPLY_MIN, DELAY_APPLY_MAX)
+
+
+def _within_work_hours() -> bool:
+    h = time.localtime().tm_hour
+    return WORK_HOUR_START <= h < WORK_HOUR_END
+
+
+def _seconds_until_work_hours() -> int:
+    """Сколько секунд спать до начала рабочего окна (если сейчас вне его)."""
+    now = time.localtime()
+    secs_into_day = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+    start = WORK_HOUR_START * 3600
+    if now.tm_hour < WORK_HOUR_START:
+        wait = start - secs_into_day
+    else:  # уже после конца окна — ждём до утра
+        wait = (24 * 3600 - secs_into_day) + start
+    return max(60, wait)
 
 # ID резюме для «подходящих» вакансий от HH (https://hh.ru/applicant/resumes
 # → кнопка «N подходящих вакансий» рядом с резюме). HH сам подбирает релевантное
@@ -634,7 +670,8 @@ def main():
     if RESUME_ID:
         print(f"🎯 + HH-рекомендации по резюме {RESUME_ID[:8]}…")
     print(f"📄 Страниц на запрос: {MAX_PAGES}")
-    print(f"⏱️  Пауза между откликами: {DELAY_BETWEEN_APPLIES} сек")
+    print(f"⏱️  Пауза между откликами: {DELAY_APPLY_MIN}–{DELAY_APPLY_MAX} сек (рандом)")
+    print(f"🗓️  Рабочие часы: {WORK_HOUR_START:02d}:00–{WORK_HOUR_END:02d}:00 · суточный лимит: {MAX_APPLIES_PER_DAY}")
     
     stats = {"success": 0, "skipped": 0, "error": 0}
 
@@ -816,8 +853,17 @@ def main():
                             )
                             _remember_in_index(vacancy)
                         stats['skipped'] += 1
-                        print(f"      ⏳ Пауза {DELAY_BETWEEN_APPLIES} сек...")
-                        time.sleep(DELAY_BETWEEN_APPLIES)
+                        d = _apply_delay()
+                        print(f"      ⏳ Пауза {d:.0f} сек...")
+                        time.sleep(d)
+                        continue
+
+                    # Суточный лимит откликов (антибан по объёму): kind='apply'
+                    # логируется ниже ДО отправки, поэтому счётчик уже включает
+                    # отклики этого прогона. Достигли потолка — дальше не откликаемся.
+                    if not dry_run and _metrics and _metrics.count_applies_since(86400) >= MAX_APPLIES_PER_DAY:
+                        print(f"      🛑 Суточный лимит {MAX_APPLIES_PER_DAY} откликов достигнут — пропускаю до завтра")
+                        stats['skipped'] += 1
                         continue
 
                     letter, addendums = build_letter(description, vacancy['title'])
@@ -876,9 +922,10 @@ def main():
                         print(f"      ❌ Ошибка: {result['reason']}")
                         stats['error'] += 1
                     
-                    print(f"      ⏳ Пауза {DELAY_BETWEEN_APPLIES} сек...")
-                    time.sleep(DELAY_BETWEEN_APPLIES)
-        
+                    d = _apply_delay()
+                    print(f"      ⏳ Пауза {d:.0f} сек...")
+                    time.sleep(d)
+
         browser.close()
     
     print("\n" + "="*50)
@@ -890,12 +937,24 @@ def main():
 
 
 def watch_loop() -> None:
-    interval = int(os.getenv("HH_APPLY_INTERVAL_SEC", "10800"))  # 3 часа
-    print(f"👀 WATCH-режим откликов, опрос каждые {interval} сек. Ctrl-C, чтобы остановить.\n")
+    interval = int(os.getenv("HH_APPLY_INTERVAL_SEC", "14400"))  # 4 часа (базовый)
+    print(f"👀 WATCH-режим откликов, интервал ~{interval} сек ±{int(APPLY_INTERVAL_JITTER*100)}%. Ctrl-C, чтобы остановить.\n")
     if _metrics:
         _metrics.log_event(kind="run_start", payload={"mode": "apply_watch", "interval_sec": interval})
     try:
         while True:
+            # Гейт 1: рабочие часы — массовые отклики ночью палят бота.
+            if not _within_work_hours():
+                w = _seconds_until_work_hours()
+                print(f"🌙 Вне рабочих часов {WORK_HOUR_START:02d}:00–{WORK_HOUR_END:02d}:00 — сплю {w // 60} мин до утра...\n")
+                time.sleep(w)
+                continue
+            # Гейт 2: суточный лимит откликов.
+            applied = _metrics.count_applies_since(86400) if _metrics else 0
+            if applied >= MAX_APPLIES_PER_DAY:
+                print(f"🛑 Суточный лимит {MAX_APPLIES_PER_DAY} откликов достигнут ({applied}) — жду 1 час...\n")
+                time.sleep(3600)
+                continue
             try:
                 main()
             except KeyboardInterrupt:
@@ -904,8 +963,10 @@ def watch_loop() -> None:
                 print(f"⚠️  Итерация откликов упала: {e}")
                 if _metrics:
                     _metrics.log_event(kind="error", payload={"where": "apply_watch_loop", "error": str(e)[:500]})
-            print(f"\n💤 Жду {interval} сек до следующего обхода вакансий...\n")
-            time.sleep(interval)
+            # Джиттер интервала: обходы не по ровному таймеру (±APPLY_INTERVAL_JITTER).
+            nap = int(interval * random.uniform(1 - APPLY_INTERVAL_JITTER, 1 + APPLY_INTERVAL_JITTER))
+            print(f"\n💤 Жду {nap} сек до следующего обхода вакансий...\n")
+            time.sleep(nap)
     except KeyboardInterrupt:
         print("\n🛑 Остановлено пользователем.")
         if _metrics:

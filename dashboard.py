@@ -19,7 +19,16 @@ from fastapi import Body, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 import metrics
-from auto_apply_template import MAX_PAGES, apply_to_vacancy, build_letter
+from auto_apply_template import (
+    DELAY_APPLY_MAX,
+    DELAY_APPLY_MIN,
+    MAX_APPLIES_PER_DAY,
+    MAX_PAGES,
+    WORK_HOUR_END,
+    WORK_HOUR_START,
+    apply_to_vacancy,
+    build_letter,
+)
 from auto_reply import SESSION_FILE
 
 PROJECT_DIR = Path(__file__).parent.resolve()
@@ -165,10 +174,14 @@ def _get_limits() -> dict[str, Any]:
     """Конфигурационные параметры (читаются из env с теми же дефолтами,
     что в скриптах воркеров)."""
     return {
-        "apply_interval_sec": int(os.getenv("HH_APPLY_INTERVAL_SEC", "10800")),
+        "apply_interval_sec": int(os.getenv("HH_APPLY_INTERVAL_SEC", "14400")),
         "reply_interval_sec": int(os.getenv("HH_WATCH_INTERVAL_SEC", "1800")),
         "boost_interval_sec": int(os.getenv("HH_BOOST_INTERVAL_SEC", "14700")),
-        "delay_between_applies_sec": 7,
+        "delay_between_applies_sec": (DELAY_APPLY_MIN + DELAY_APPLY_MAX) // 2,
+        "delay_apply_min_sec": DELAY_APPLY_MIN,
+        "delay_apply_max_sec": DELAY_APPLY_MAX,
+        "max_applies_per_day": MAX_APPLIES_PER_DAY,
+        "work_hours": f"{WORK_HOUR_START:02d}:00–{WORK_HOUR_END:02d}:00",
         "max_chats_per_run": 30,
         "max_pages": MAX_PAGES,
         "dedup_window_days": 60,
@@ -713,7 +726,7 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
       <div class="card">
         <div class="label">Пауза между откликами</div>
         <div class="value" id="lim-delay">—</div>
-        <div class="sub">DELAY_BETWEEN_APPLIES</div>
+        <div class="sub">HH_DELAY_APPLY_MIN/MAX (рандом)</div>
       </div>
       <div class="card">
         <div class="label">Чатов за прогон</div>

@@ -282,6 +282,18 @@ def count_events(kinds: Iterable[str] | None = None) -> int:
     return int(row["n"]) if row else 0
 
 
+def count_applies_since(seconds: int = 86400) -> int:
+    """Число фактически отправленных откликов (kind='apply') за последние `seconds`.
+    Используется для суточного лимита откликов (антибан по объёму)."""
+    since = time.time() - seconds
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM events WHERE kind = 'apply' AND ts >= ?",
+            (since,),
+        ).fetchone()
+    return int(row["n"]) if row else 0
+
+
 def get_chat_history(chat_url: str) -> list[dict[str, Any]]:
     """Все события (reply/skip) для одного chat_url, по возрастанию времени."""
     if not chat_url:

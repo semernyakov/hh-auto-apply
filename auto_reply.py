@@ -15,6 +15,7 @@ Claude Haiku 4.5 на основе MY_PROFILE из auto_apply_template.py.
 
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -36,9 +37,16 @@ import notify
 load_dotenv()
 metrics.init_db()
 
-DELAY_BETWEEN_CHATS = 8
+# Пауза между чатами — РАНДОМНЫЙ диапазон (сек). Ровный ритм палит бота.
+DELAY_CHAT_MIN = int(os.getenv("HH_DELAY_CHAT_MIN", "20"))
+DELAY_CHAT_MAX = int(os.getenv("HH_DELAY_CHAT_MAX", "40"))
 MAX_CHATS_PER_RUN = 30
 CHATS_URL = "https://hh.ru/chat"
+
+
+def _chat_delay() -> float:
+    """Рандомная пауза между чатами — человекоподобность против антибана."""
+    return random.uniform(DELAY_CHAT_MIN, DELAY_CHAT_MAX)
 
 # Минимальный интервал между повторными генерациями в одном и том же чате,
 # если содержимое последнего входящего блока НЕ изменилось. Защита от карусели:
@@ -57,6 +65,8 @@ REPLY_COOLDOWN_SEC = int(os.getenv("HH_REPLY_COOLDOWN_SEC", "21600"))
 DRY_RUN = "--dry-run" in sys.argv
 WATCH_MODE = "--watch" in sys.argv
 WATCH_INTERVAL = int(os.getenv("HH_WATCH_INTERVAL_SEC", "1800"))  # 30 минут по умолчанию
+# Джиттер интервала обхода чатов (доля): реальная пауза = WATCH_INTERVAL * (1 ± JITTER)
+WATCH_INTERVAL_JITTER = float(os.getenv("HH_WATCH_INTERVAL_JITTER", "0.2"))
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -367,6 +377,56 @@ def is_skip_response(text: str) -> bool:
     return head.startswith("SKIP")
 
 
+# Максимум блоков истории чата, уходящих в промпт. Хвост диалога несёт основной
+# контекст; ранние блоки лишь раздувают вход (некэшируемую часть) и стоят токенов.
+MAX_HISTORY_BLOCKS = 12
+
+
+def _truncate_history(chat_history: str, max_blocks: int = MAX_HISTORY_BLOCKS) -> str:
+    """Оставляет последние max_blocks блоков истории (блоки разделены пустой строкой).
+    Свежие сообщения важнее для ответа; старые режем, чтобы не гнать лишние токены."""
+    if not chat_history:
+        return chat_history
+    blocks = [b for b in chat_history.strip().split("\n\n") if b.strip()]
+    if len(blocks) <= max_blocks:
+        return chat_history
+    kept = blocks[-max_blocks:]
+    return "[...более ранние сообщения опущены...]\n\n" + "\n\n".join(kept)
+
+
+# Явные «ответ не требуется» от работодателя/HH — ловим правилами ДО вызова Claude.
+# Консервативный набор: только однозначные авто-уведомления и финальные отказы,
+# где генерировать ответ бессмысленно. Раньше то же решение принимал LLM ценой
+# полного вызова с профилем и историей — это и есть основная статья skip-издержек.
+NO_REPLY_NEEDED_PATTERNS = (
+    "ваш отклик просмотрен",
+    "резюме доставлено",
+    "вакансия закрыта",
+    "вакансия снята с публикации",
+    "вакансия в архиве",
+    "приглашение больше не действительно",
+    "к сожалению, мы приняли решение",
+    "к сожалению, вынуждены отказать",
+    "мы остановились на другом кандидате",
+    "мы выбрали другого кандидата",
+    "вы не подходите на данную позицию",
+    "спасибо за отклик, но",
+)
+
+
+def no_reply_needed(chat_history: str) -> str:
+    """Возвращает сработавший паттерн, если последнее ВХОДЯЩЕЕ сообщение —
+    авто-уведомление/финальный отказ, на который отвечать не нужно. Иначе ''."""
+    last = _last_incoming_block(chat_history)
+    if not last:
+        return ""
+    low = last.lower()
+    for p in NO_REPLY_NEEDED_PATTERNS:
+        if p in low:
+            return p
+    return ""
+
+
 def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "") -> str:
     """Генерирует ответ через Claude Haiku 4.5 на основе MY_PROFILE и истории чата."""
     # Hard guard: если последний блок history принадлежит нам — отвечать не на что.
@@ -417,6 +477,24 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
                         },
                     )
                     return "SKIP"
+
+    # Дешёвый предфильтр: явные авто-уведомления и финальные отказы — ответа не ждут,
+    # незачем тратить полный LLM-вызов (это основная статья наших skip-издержек).
+    nr = no_reply_needed(chat_history)
+    if nr:
+        print(f"    ⏭️  Авто-уведомление/отказ ({nr!r}) — ответ не требуется, SKIP")
+        metrics.log_event(
+            kind="skip",
+            vacancy=vacancy_title,
+            chat_url=chat_url,
+            payload={
+                "reason": "no_reply_needed",
+                "trigger": nr,
+                "history_len": len(chat_history),
+                "history_tail": chat_history[-2000:] if chat_history else "",
+            },
+        )
+        return "SKIP"
 
     # Робот-анкета: автобот HH присылает серию однотипных вопросов («Был ли опыт…?»),
     # которые уходят работодателю в summary. Любой авто-ответ от Claude тут — риск:
@@ -518,22 +596,30 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
         )
         print(f"    📜 В контексте {len(prev_self)} прошлых ответов бота")
 
-    user_msg = f"""ПРОФИЛЬ:
-{MY_PROFILE}
-
-ВАКАНСИЯ: {vacancy_title or "не указано"}
+    user_msg = f"""ВАКАНСИЯ: {vacancy_title or "не указано"}
 
 ИСТОРИЯ ЧАТА (последние сообщения, сверху старые, снизу новые):
-{chat_history}{antirepeat_block}{self_history_block}
+{_truncate_history(chat_history)}{antirepeat_block}{self_history_block}
 
 Сформулируй ответ соискателя на последнее сообщение от работодателя. Если отвечать не нужно, верни SKIP."""
 
     try:
+        # Prompt caching: SYSTEM_PROMPT + профиль неизменны между вызовами, поэтому
+        # держим их отдельными system-блоками с cache_control на последнем — весь
+        # префикс кэшируется (cache-read ≈ 0.1× цены). Переменная часть (вакансия,
+        # история чата) остаётся в user-сообщении и не ломает кэш.
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=500,
             temperature=0.5,
-            system=SYSTEM_PROMPT,
+            system=[
+                {"type": "text", "text": SYSTEM_PROMPT},
+                {
+                    "type": "text",
+                    "text": "ПРОФИЛЬ:\n" + MY_PROFILE,
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
             messages=[{"role": "user", "content": user_msg}],
         )
         text = response.content[0].text.strip()
@@ -1283,8 +1369,9 @@ def main():
                         print("    ❌ Не удалось отправить")
                         stats["errors"] += 1
 
-                print(f"    ⏳ Пауза {DELAY_BETWEEN_CHATS} сек...")
-                time.sleep(DELAY_BETWEEN_CHATS)
+                d = _chat_delay()
+                print(f"    ⏳ Пауза {d:.0f} сек...")
+                time.sleep(d)
             except Exception as e:
                 print(f"    ❌ Ошибка: {e}")
                 stats["errors"] += 1
@@ -1311,8 +1398,9 @@ def watch_loop() -> None:
             except Exception as e:
                 print(f"⚠️  Итерация упала: {e}")
                 metrics.log_event(kind="error", payload={"where": "watch_loop", "error": str(e)[:500]})
-            print(f"\n💤 Жду {WATCH_INTERVAL} сек до следующего обхода...\n")
-            time.sleep(WATCH_INTERVAL)
+            nap = int(WATCH_INTERVAL * random.uniform(1 - WATCH_INTERVAL_JITTER, 1 + WATCH_INTERVAL_JITTER))
+            print(f"\n💤 Жду {nap} сек до следующего обхода...\n")
+            time.sleep(nap)
     except KeyboardInterrupt:
         print("\n🛑 Остановлено пользователем.")
         metrics.log_event(kind="run_end", payload={"reason": "keyboard_interrupt"})
