@@ -19,6 +19,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -41,8 +42,17 @@ BOOST_BUTTON_SELECTORS = [
     "button[data-qa='resume-update-button_button']",
     "button[data-qa^='resume-update-button']",
     "[data-qa='resume-update-button']",
+    "a[data-qa='resume-update-button']",
     "button:has-text('Поднять в поиске')",
     "a:has-text('Поднять в поиске')",
+    # Новый UI HH (2025+): кликабельный div с текстом «Поднять»
+    "[data-qa='resume-renewal-manual-text']",
+]
+
+# Селектор кулдаун-текста «Поднять в 12:47» / «Поднять вручную можно через…»
+COOLDOWN_TEXT_SELECTORS = [
+    "[data-qa='resume-renewal-manual-text']",
+    "[data-qa='resume-renewal-manual-text']",
 ]
 
 # Возможные формы подписи c кулдауном:
@@ -58,13 +68,20 @@ COOLDOWN_ABSOLUTE_RE = re.compile(
     r"можно\s+(сегодня|завтра)\s+в\s*(\d{1,2})[:.](\d{2})",
     re.IGNORECASE,
 )
+# Новый UI HH (2025+): «Поднять в 12:47» — без слова «можно»
+COOLDOWN_SHORT_RE = re.compile(
+    r"поднять\s+в\s*(\d{1,2})[:.](\d{2})",
+    re.IGNORECASE,
+)
 
 
 def _parse_cooldown(text: str, now: datetime | None = None) -> int | None:
     """Возвращает оставшееся время до следующего подъёма в секундах, или None.
 
-    Поддерживает оба формата HH: относительный («через X ч Y мин») и
-    абсолютный («сегодня в 17:18», «завтра в 09:00»).
+    Поддерживает форматы HH:
+    - «через X ч Y мин»
+    - «сегодня в 17:18», «завтра в 09:00»
+    - «Поднять в 12:47» (новый UI 2025+)
     """
     if not text:
         return None
@@ -86,7 +103,17 @@ def _parse_cooldown(text: str, now: datetime | None = None) -> int | None:
         if when_word == "завтра":
             target += timedelta(days=1)
         elif target <= now:
-            # «сегодня в 09:00», когда уже 14:00 — значит на самом деле завтра.
+            target += timedelta(days=1)
+        delta = (target - now).total_seconds()
+        return int(delta) if delta > 0 else None
+
+    # Новый UI: «Поднять в 12:47»
+    m = COOLDOWN_SHORT_RE.search(s)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        now = now or datetime.now()
+        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now:
             target += timedelta(days=1)
         delta = (target - now).total_seconds()
         return int(delta) if delta > 0 else None
@@ -95,11 +122,15 @@ def _parse_cooldown(text: str, now: datetime | None = None) -> int | None:
 
 
 def _has_cooldown_label(text: str) -> bool:
-    """True, если на карточке есть подпись «Поднять вручную можно...»."""
+    """True, если на карточке есть подпись «Поднять вручную можно...» или «Поднять в HH:MM»."""
     if not text:
         return False
     s = text.replace("\xa0", " ").lower()
-    return "поднять вручную можно" in s
+    return (
+        "поднять вручную можно" in s
+        or bool(COOLDOWN_ABSOLUTE_RE.search(s))
+        or bool(COOLDOWN_SHORT_RE.search(s))
+    )
 
 
 def _resume_cards(page) -> list:
@@ -124,13 +155,19 @@ def _find_boost_button(scope) -> Any | None:
         if loc.count() > 0:
             try:
                 if loc.first.is_visible(timeout=1500):
-                    return loc.first
+                    el = loc.first
+                    # Новый UI: resume-renewal-manual-text — это текст «Поднять в HH:MM»
+                    # Это кулдаун, а не кнопка. Возвращаем None, чтобы логика
+                    # кулдауна отработала через _has_cooldown_label.
+                    if sel == "[data-qa='resume-renewal-manual-text']":
+                        return None
+                    return el
             except Exception:
                 pass
 
     # 2) Селекторо-независимый поиск: любой кликабельный элемент в области,
     #    чей видимый текст содержит «Поднять в поиске».
-    #    Исключаем подпись «Поднять вручную можно…» (это не кнопка, а текст).
+    #    Исключаем подпись «Поднять вручную можно…» и «Поднять в HH:MM» (кулдаун).
     for css in [
         "button",
         "a",
@@ -149,11 +186,80 @@ def _find_boost_button(scope) -> Any | None:
                 continue
             if "поднять" not in txt:
                 continue
+            # Кулдаун-текст: «Поднять вручную можно…» или «Поднять в 12:47»
             if "вручную" in txt:
-                continue  # это подпись с таймером, не кнопка
+                continue
+            if re.search(r"поднять\s+в\s*\d", txt):
+                continue
             if "поднять в поиске" in txt or "поднять резюме" in txt or txt.strip() == "поднять":
                 return el
     return None
+
+
+def _dismiss_modals(page, max_attempts: int = 3) -> None:
+    """Закрывает модальные окна HH.ru, которые блокируют клики.
+
+    Стратегия (по приоритету):
+    1. Escape — закрывает большинство модалок
+    2. Клик по крестику / кнопке закрытия внутри модалки
+    3. JS: скрыть overlay (фоллбэк, если ничего не помогло)
+    """
+    for _ in range(max_attempts):
+        # Проверяем, есть ли вообще overlay
+        try:
+            overlay = page.locator("[data-qa='modal-overlay']")
+            if overlay.count() == 0:
+                return
+        except Exception:
+            return
+
+        # 1. Escape — самый надёжный способ закрыть модалку на HH
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+            if page.locator("[data-qa='modal-overlay']").count() == 0:
+                return
+        except Exception:
+            pass
+
+        # 2. Клик по кнопке закрытия внутри модалки
+        close_selectors = [
+            "[data-qa='modal-overlay'] [data-qa='modal-close']",
+            "[data-qa='modal-overlay'] button[aria-label='Закрыть']",
+            "[data-qa='modal-overlay'] button[aria-label='Close']",
+            "[data-qa='modal-overlay'] .magritte-modal__close",
+            "[data-qa='modal-overlay'] button:has(svg)",
+            "[data-qa='modal-overlay'] [class*='close']",
+            "[data-qa='modal-overlay'] button:last-child",
+        ]
+        closed = False
+        for sel in close_selectors:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0 and loc.first.is_visible(timeout=500):
+                    loc.first.click(timeout=2000)
+                    page.wait_for_timeout(500)
+                    if page.locator("[data-qa='modal-overlay']").count() == 0:
+                        return
+                    closed = True
+                    break
+            except Exception:
+                continue
+
+        if closed:
+            continue
+
+        # 3. JS: скрыть overlay, если ничего не помогло
+        try:
+            page.evaluate("""
+                document.querySelectorAll('[data-qa="modal-overlay"]').forEach(el => {
+                    el.style.display = 'none';
+                });
+            """)
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
+        return
 
 
 def _scope_text(scope) -> str:
@@ -221,10 +327,17 @@ def boost_resume(card) -> dict[str, Any]:
         return {"status": "cooldown", "title": title, "cooldown_sec": cooldown}
 
     try:
+        # Закрываем модальные окна перед кликом
+        _dismiss_modals(card.page)
+
         btn.scroll_into_view_if_needed(timeout=3000)
         btn.click(timeout=5000)
     except PlaywrightTimeoutError as e:
-        return {"status": "error", "title": title, "reason": f"click timeout: {e}"}
+        # Фоллбэк: принудительный клик, если overlay не закрылся
+        try:
+            btn.click(timeout=3000, force=True)
+        except Exception:
+            return {"status": "error", "title": title, "reason": f"click timeout: {e}"}
     except Exception as e:
         return {"status": "error", "title": title, "reason": str(e)[:200]}
 
@@ -248,6 +361,9 @@ def boost_all(page) -> dict[str, Any]:
         page.wait_for_load_state("networkidle", timeout=8000)
     except PlaywrightTimeoutError:
         pass
+
+    # Закрываем модальные окна сразу после загрузки страницы
+    _dismiss_modals(page)
 
     if "captcha" in page.title().lower():
         print("  ⚠️  Сработала капча, пропускаю проход")
@@ -340,6 +456,16 @@ def _run_once() -> dict[str, int]:
 
 
 def main() -> None:
+    # Создаём PID-файл для дашборда
+    pid_file = Path("/tmp/hh_resume_boost.pid")
+    pid_file.write_text(str(os.getpid()))
+    
+    # Очищаем и открываем лог-файл для записи
+    log_file = Path("/tmp/hh_resume_boost.log")
+    log_fh = open(log_file, "w", buffering=1)
+    sys.stdout = log_fh
+    sys.stderr = log_fh
+    
     print("\n" + "=" * 50)
     print("⬆️  HH.ru авто-подъём резюме" + (" [DRY-RUN]" if DRY_RUN else ""))
     print("=" * 50)
@@ -353,6 +479,16 @@ def main() -> None:
 
 
 def watch_loop() -> None:
+    # Создаём PID-файл для дашборда (для watch-режима тоже)
+    pid_file = Path("/tmp/hh_resume_boost.pid")
+    pid_file.write_text(str(os.getpid()))
+    
+    # Очищаем и открываем лог-файл для записи
+    log_file = Path("/tmp/hh_resume_boost.log")
+    log_fh = open(log_file, "w", buffering=1)
+    sys.stdout = log_fh
+    sys.stderr = log_fh
+
     print(f"👀 WATCH-режим, проход каждые {WATCH_INTERVAL} сек. Ctrl-C, чтобы остановить.\n")
     metrics.log_event(
         kind="run_start",

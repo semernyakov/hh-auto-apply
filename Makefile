@@ -7,6 +7,11 @@ PORT        := 8765
 .PHONY: start stop restart status logs
 
 start:
+	@if [ ! -x $(PYTHON) ]; then \
+		echo "Ошибка: $(PYTHON) не найден или не исполняемый"; \
+		echo "Создайте venv: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"; \
+		exit 1; \
+	fi
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Dashboard уже запущен (PID $$(cat $(PID_FILE))) — http://127.0.0.1:$(PORT)"; \
 	else \
@@ -14,7 +19,13 @@ start:
 		HH_HEADLESS=1 nohup $(PYTHON) -u $(PROJECT_DIR)/dashboard.py > $(LOG_FILE) 2>&1 & \
 		echo $$! > $(PID_FILE); \
 		sleep 2; \
-		echo "Dashboard запущен (PID $$(cat $(PID_FILE))) — http://127.0.0.1:$(PORT)"; \
+		if kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+			echo "Dashboard запущен (PID $$(cat $(PID_FILE))) — http://127.0.0.1:$(PORT)"; \
+		else \
+			echo "Ошибка запуска. Проверьте лог: $(LOG_FILE)"; \
+			rm -f $(PID_FILE); \
+			exit 1; \
+		fi; \
 	fi
 
 stop:
@@ -42,8 +53,13 @@ restart: stop start
 status:
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Dashboard: running (PID $$(cat $(PID_FILE)))"; \
-		curl -s http://127.0.0.1:$(PORT)/api/status | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); [print(f'  {n}: running={w[\"running\"]} pid={w[\"pid\"]}') for n,w in d['workers'].items()]" 2>/dev/null || true; \
+		if curl -s --max-time 3 http://127.0.0.1:$(PORT)/api/status | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); [print(f'  {n}: running={w[\"running\"]} pid={w[\"pid\"]}') for n,w in d['workers'].items()]" 2>/dev/null; then \
+			:; \
+		else \
+			echo "  (API недоступен, но процесс жив)"; \
+		fi; \
 	else \
+		rm -f $(PID_FILE); \
 		echo "Dashboard: stopped"; \
 	fi
 

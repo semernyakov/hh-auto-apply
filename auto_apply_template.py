@@ -15,7 +15,9 @@ import os
 import random
 import sys
 import time
+from pathlib import Path
 from anthropic import Anthropic
+from openai import OpenAI
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 from dotenv import load_dotenv
 
@@ -66,8 +68,14 @@ except Exception:
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or "YOUR_ANTHROPIC_API_KEY"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
+# OpenRouter API ключ (получить на https://openrouter.ai/keys)
+# Приоритет: переменная окружения OPENROUTER_API_KEY, потом значение ниже.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_OPENROUTER_API_KEY"
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL") or "google/gemma-4-31b-it:free"
+
 # Сколько страниц парсить для каждого запроса (1 страница = ~20 вакансий)
-MAX_PAGES = int(os.getenv("HH_MAX_PAGES", "2"))
+# Увеличь до 3-5 для большего охвата, но это замедлит прогон.
+MAX_PAGES = int(os.getenv("HH_MAX_PAGES", "3"))
 
 # Пауза между откликами — РАНДОМНЫЙ диапазон (сек). Фиксированная пауза — маркер
 # бота: живой человек читает вакансию разное время. Не ставь меньше ~15с.
@@ -75,11 +83,12 @@ DELAY_APPLY_MIN = int(os.getenv("HH_DELAY_APPLY_MIN", "25"))
 DELAY_APPLY_MAX = int(os.getenv("HH_DELAY_APPLY_MAX", "50"))
 
 # Суточный лимит откликов (жёсткий потолок против бана по объёму). За окно 24ч.
-MAX_APPLIES_PER_DAY = int(os.getenv("HH_MAX_APPLIES_PER_DAY", "25"))
+# Внимание: увеличение лимита повышает риск бана HH. Не ставь больше 100 без необходимости.
+MAX_APPLIES_PER_DAY = int(os.getenv("HH_MAX_APPLIES_PER_DAY", "100"))
 
 # Рабочие часы (локальное время сервера, МСК) [start, end) — вне окна бот НЕ
 # откликается: массовые отклики ночью — яркий признак бота.
-WORK_HOUR_START = int(os.getenv("HH_WORK_HOUR_START", "9"))
+WORK_HOUR_START = int(os.getenv("HH_WORK_HOUR_START", "8"))
 WORK_HOUR_END = int(os.getenv("HH_WORK_HOUR_END", "21"))
 
 # Джиттер интервала между обходами (доля): реальная пауза = interval * (1 ± JITTER).
@@ -172,6 +181,16 @@ def build_letter(description: str, title: str = "") -> tuple[str, list[str]]:
 
 # Совместимость, где-то в коде может использоваться константа.
 STANDARD_LETTER = _LETTER_BODY + "\n\n" + _LETTER_SIGNATURE
+
+
+# Триггеры в названии вакансии для ручной очереди (не skip, не автоотклик).
+# Data/Database/Analytics/Researcher — требуют ручной проверки контекста.
+MANUAL_TITLE_TRIGGERS = [
+    " data ", "data-", "/data", "(data", "data,", "data.",
+    " database ", " database,", "базы данных", "бд ", "бд,",
+    " analytics ", " analytics,", "аналитик", "аналитика",
+    " researcher ", "researcher", "исследователь",
+]
 
 
 # Если в тексте вакансии встречается любая из этих фраз, не отправляем
@@ -281,10 +300,18 @@ WRONG_ROLE_TITLE_TRIGGERS = [
     # QA / Testing
     "qa engineer", "qa-engineer", "qa lead", "qa инженер", "quality assurance",
     "automation qa", "qa automation", "manual qa", "sdet", "aqa",
-    "test engineer", "test automation",
+    "test engineer", "test automation", "qa", 
     "тестировщик", "инженер по тестированию",
     # Преподаватели / менторы (не наша роль)
     "преподаватель", "teacher", "lecturer", "instructor",
+    # Frontend (не backend/python)
+    "frontend", "front-end", "фронтенд", "front end",
+    # Аналитики (не data science)
+    "аналитик", "analyst",
+    # Тренеры / преподаватели (альтернативные названия)
+    "тренер", "trainer", "coach", "coach ",
+    # Продажи (не наша роль)
+    "менеджер по продажам", "sales manager", "sales director",
 ]
 
 
@@ -292,6 +319,15 @@ def wrong_role_match(title: str) -> str:
     """Возвращает первый совпавший триггер чужой роли или пустую строку."""
     t = " " + (title or "").lower() + " "
     for trig in WRONG_ROLE_TITLE_TRIGGERS:
+        if trig in t:
+            return trig.strip()
+    return ""
+
+
+def has_manual_title_trigger(title: str) -> str:
+    """Возвращает первый совпавший триггер для ручной очереди или пустую строку."""
+    t = " " + (title or "").lower() + " "
+    for trig in MANUAL_TITLE_TRIGGERS:
         if trig in t:
             return trig.strip()
     return ""
@@ -314,6 +350,7 @@ AI_LLM_TITLE_MARKERS = [
     " ии ", " ии,", " ии)", "(ии ", " ии-", "по внедрению ии",
     "искусственн",
     "промпт", "prompt engineer", "prompt-engineer",
+    "genai", "gen ai", "generative ai",
 ]
 
 # Position-маркеры — указывают на «ролевую» (IC/Lead) вакансию.
@@ -393,11 +430,18 @@ def has_ml_marker(title: str) -> bool:
 
 # ============== КОД ==============
 
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+# Anthropic клиент
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# OpenRouter клиент (OpenAI-совместимый API)
+openrouter_client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
 
 
 def generate_cover_letter(title: str, employer: str, description: str, vacancy_url: str = "") -> str:
-    """Генерирует сопроводительное письмо через Claude Haiku 4.5"""
+    """Генерирует сопроводительное письмо через OpenRouter (Gemma 4 31B)"""
     prompt = f"""Напиши сопроводительное письмо для отклика на вакансию. Пиши как живой человек, не как робот.
 
 СТРУКТУРА ПИСЬМА:
@@ -426,20 +470,20 @@ def generate_cover_letter(title: str, employer: str, description: str, vacancy_u
 Напиши только текст письма, без комментариев."""
 
     try:
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
+        response = openrouter_client.chat.completions.create(
+            model=OPENROUTER_MODEL,
             max_tokens=350,
             temperature=0.8,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text.strip()
+        text = response.choices[0].message.content.strip()
         if _metrics:
             usage = getattr(response, "usage", None)
             _metrics.log_event(
                 kind="apply",
-                model=ANTHROPIC_MODEL,
-                tokens_in=getattr(usage, "input_tokens", 0) if usage else 0,
-                tokens_out=getattr(usage, "output_tokens", 0) if usage else 0,
+                model=OPENROUTER_MODEL,
+                tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
                 vacancy=f"{title} · {employer}",
                 chat_url=vacancy_url,
                 payload={"letter": text, "vacancy_url": vacancy_url, "title": title, "employer": employer},
@@ -450,12 +494,43 @@ def generate_cover_letter(title: str, employer: str, description: str, vacancy_u
         if _metrics:
             _metrics.log_event(
                 kind="error",
-                model=ANTHROPIC_MODEL,
+                model=OPENROUTER_MODEL,
                 vacancy=f"{title} · {employer}",
                 chat_url=vacancy_url,
                 payload={"error": str(e)[:500], "vacancy_url": vacancy_url},
             )
         return ""
+
+
+def _safe_goto(page, url: str, *, wait_until: str = "domcontentloaded",
+               timeout: int = 30000, max_retries: int = 3, delay: float = 2.0) -> None:
+    """page.goto() с retry при навигационных ошибках (ERR_CONNECTION_CLOSED,
+    Navigation interrupted). Между попытками — пауза, чтобы браузер успел
+    стабилизироваться."""
+    for attempt in range(max_retries):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout)
+            return
+        except Exception as e:
+            msg = str(e)
+            is_nav_error = (
+                "ERR_CONNECTION_CLOSED" in msg
+                or "Navigation interrupted" in msg
+                or "net::ERR" in msg
+                or "chrome-error://" in msg
+            )
+            if not is_nav_error or attempt == max_retries - 1:
+                raise
+            wait = delay * (attempt + 1)
+            print(f"    ⚠️  Навигационная ошибка (попытка {attempt+1}/{max_retries}), "
+                  f"жду {wait:.0f}с: {msg[:120]}")
+            time.sleep(wait)
+            # Закрываем вкладку ошибки если браузер открыл chrome-error://
+            try:
+                if page.url.startswith("chrome-error://"):
+                    page.goto("about:blank", wait_until="load", timeout=5000)
+            except Exception:
+                pass
 
 
 def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = "") -> list:
@@ -484,8 +559,8 @@ def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = 
         )
     
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        
+        _safe_goto(page, url, wait_until="domcontentloaded", timeout=30000)
+
         # Проверка на капчу
         if "captcha" in page.title().lower():
             print("  ⚠️  Сработала капча! Подожди немного и попробуй снова.")
@@ -531,7 +606,7 @@ def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = 
 def get_vacancy_description(page, url: str) -> str:
     """Получает описание вакансии"""
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        _safe_goto(page, url, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_selector("[data-qa='vacancy-description']", timeout=10000)
         
         desc_el = page.locator("[data-qa='vacancy-description']")
@@ -572,7 +647,7 @@ def _has_screening_questions(page) -> bool:
 def apply_to_vacancy(page, url: str, message: str) -> dict:
     """Откликается на вакансию с сопроводительным письмом"""
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        _safe_goto(page, url, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(3000)
 
         # Уже откликались?
@@ -643,19 +718,115 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
             if _has_screening_questions(page):
                 return {"status": "has_questions", "reason": "Скрининг-вопросы от работодателя"}
 
-            letter_area = page.locator("textarea").first
-            if letter_area.count() > 0 and message:
-                print("      ✍️  Появилось поле для письма, заполняю...")
-                letter_area.fill(message)
-                page.wait_for_timeout(1000)
+            # Проверяем, появилось ли всплывающее окно с кнопкой "Добавить сопроводительное"
+            add_letter_btn = page.locator("button:has-text('Добавить сопроводительное')")
+            if add_letter_btn.count() == 0:
+                add_letter_btn = page.locator("button:has-text('Добавить сопроводительное письмо')")
+            if add_letter_btn.count() > 0:
+                print("      🔍 Нашёл кнопку 'Добавить сопроводительное'")
+                add_letter_btn.first.click()
+                page.wait_for_timeout(2000)
+
+            # Ждём появления textarea с письмом (HH может подгружать динамически)
+            page.wait_for_timeout(2000)
+            
+            # Пробуем несколько селекторов для textarea
+            letter_area = None
+            selectors = [
+                "textarea[placeholder*='сопроводительное']",
+                "textarea[name*='letter']",
+                "textarea[data-qa*='letter']",
+                "div[contenteditable='true']",
+                "textarea",  # fallback
+            ]
+            
+            for selector in selectors:
+                try:
+                    el = page.locator(selector).first
+                    if el.count() > 0 and el.is_visible(timeout=500):
+                        letter_area = el
+                        print(f"      ✍️  Нашёл поле: {selector}")
+                        break
+                except Exception:
+                    continue
+            
+            if not letter_area:
+                print("      ❌ Поле для письма не найдено")
+                return {"status": "error", "reason": "no_textarea"}
+
+            if message:
+                print("      ✍️  Заполняю поле для письма...")
                 
-                submit_btn = page.locator("button:has-text('Отправить'), button:has-text('Откликнуться'), button:has-text('Отправить письмо'), button[type='submit']").first
+                # Фокусируемся на поле
+                try:
+                    letter_area.focus()
+                    page.wait_for_timeout(300)
+                except Exception as e:
+                    print(f"      ⚠️  Не удалось сфокусироваться: {e}")
+                
+                # Очищаем поле (если там что-то есть)
+                try:
+                    letter_area.press("Control+a")
+                    page.wait_for_timeout(200)
+                    letter_area.press("Backspace")
+                    page.wait_for_timeout(200)
+                except Exception as e:
+                    print(f"      ⚠️  Не удалось очистить: {e}")
+                
+                # Вставляем текст
+                print(f"      📝 Вставляю письмо ({len(message)} символов)...")
+                try:
+                    letter_area.fill(message)
+                    page.wait_for_timeout(500)
+                    
+                    # Проверяем, что текст записался
+                    actual_value = letter_area.input_value(timeout=1000)
+                    if actual_value != message:
+                        print(f"      ⚠️  Текст не записался полностью (записано {len(actual_value)}/{len(message)})")
+                        # Пробуем ещё раз методом press
+                        letter_area.press("Control+a")
+                        letter_area.press("Backspace")
+                        for char in message:
+                            letter_area.press(char)
+                            if len(char) % 50 == 0:
+                                page.wait_for_timeout(50)
+                        page.wait_for_timeout(500)
+                        actual_value = letter_area.input_value(timeout=1000)
+                    
+                    if actual_value == message:
+                        print("      ✅ Текст записан успешно")
+                    else:
+                        print(f"      ⚠️  Текст записан частично: {len(actual_value)}/{len(message)}")
+                        
+                except Exception as e:
+                    print(f"      ❌ Ошибка при заполнении: {e}")
+                    # Альтернативный метод: keyboard type
+                    try:
+                        letter_area.press("Control+a")
+                        letter_area.press("Backspace")
+                        letter_area.type(message, delay=10)
+                        page.wait_for_timeout(500)
+                        print("      ✅ Текст введён методом type()")
+                    except Exception as e2:
+                        print(f"      ❌ Не удалось ввести текст: {e2}")
+                        return {"status": "error", "reason": "text_insert_failed"}
+
+                print("      📨 Ищу кнопку отправки...")
+                submit_btn = page.locator("button:has-text('Отправить'), button:has-text('Откликнуться'), button:has-text('Отправить письмо')").first
                 if submit_btn.count() > 0:
                     print("      📨 Нажимаю кнопку отправки...")
                     submit_btn.click()
                     page.wait_for_timeout(3000)
-                    return {"status": "success", "reason": "С письмом (после отклика)"}
+                    
+                    # Проверяем успешность отправки
+                    if page.locator("text=Вы откликнулись").count() > 0:
+                        return {"status": "success", "reason": "С письмом (подтверждено)"}
+                    elif page.locator("text=Резюме доставлено").count() > 0:
+                        return {"status": "success", "reason": "С письмом (доставлено)"}
+                    else:
+                        return {"status": "success", "reason": "С письмом (статус неясен)"}
                 else:
+                    # Ищем кнопку по всем текстам
                     all_buttons = page.locator("button").all()
                     for btn in all_buttons:
                         btn_text = btn.inner_text().lower()
@@ -663,8 +834,14 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                             print(f"      📨 Нашёл кнопку: {btn_text}")
                             btn.click()
                             page.wait_for_timeout(3000)
-                            return {"status": "success", "reason": "С письмом"}
-            
+                            if page.locator("text=Вы откликнулись").count() > 0:
+                                return {"status": "success", "reason": "С письмом (найдена кнопка)"}
+                            return {"status": "success", "reason": "С письмом (кнопка нажата)"}
+                    
+                    print("      ❌ Кнопка отправки не найдена")
+                    return {"status": "error", "reason": "no_submit_button"}
+
+            # Проверяем, откликнулись ли без письма
             if page.locator("text=Вы откликнулись").count() > 0 or page.locator("text=Резюме доставлено").count() > 0:
                 return {"status": "success", "reason": "Без письма"}
             
@@ -678,16 +855,28 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
 
 def main():
     dry_run = "--dry-run" in sys.argv
+    
+    # Создаём PID-файл для дашборда
+    pid_file = Path("/tmp/hh_auto_apply.pid")
+    pid_file.write_text(str(os.getpid()))
+    
+    # Очищаем и открываем лог-файл для записи
+    log_file = Path("/tmp/hh_auto_apply.log")
+    log_fh = open(log_file, "w", buffering=1)
+    sys.stdout = log_fh
+    sys.stderr = log_fh
+    
     print("\n" + "="*50)
     print("🚀 HH.ru Автооткликатор" + (" [DRY-RUN]" if dry_run else ""))
     print("="*50)
-    
+
     # Проверка настроек
-    if ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY":
-        print("\n❌ Ошибка: Укажи свой Anthropic API ключ в файле!")
-        print("   Открой auto_apply.py и замени YOUR_ANTHROPIC_API_KEY")
+    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
+        print("\n❌ Ошибка: Укажи свой OpenRouter API ключ!")
+        print("   Получи на https://openrouter.ai/keys")
+        print("   Или задай OPENROUTER_API_KEY в .env файле")
         return
-    
+
     if "YOUR_SEARCH_QUERY" in SEARCH_QUERIES[0]:
         print("\n❌ Ошибка: Укажи поисковые запросы!")
         print("   Открой auto_apply.py и заполни SEARCH_QUERIES")
@@ -756,6 +945,8 @@ def main():
             print(f"\n{src['label']}")
 
             for page_num in range(MAX_PAGES):
+                if page_num > 0:
+                    page.wait_for_timeout(2000)
                 print(f"  📄 Страница {page_num + 1}")
 
                 vacancies = search_vacancies(
@@ -790,11 +981,33 @@ def main():
                     # Приоритет фильтров (строго в этом порядке):
                     # 1) AI/LLM + позиция/инфра — таргет, перебивает wrong_role
                     # 2) ML-маркер — ручная очередь, перебивает wrong_role
-                    # 3) wrong_role — скип
-                    # 4) Python/automation сами по себе — таргет
-                    # 5) AI-only (без позиции) — ручная очередь
-                    # 6) иначе — скип not_target_role
+                    # 3) Data/Database/Analytics/Researcher — ручная очередь
+                    # 4) wrong_role — скип
+                    # 5) Python/automation сами по себе — таргет
+                    # 6) AI-only (без позиции) — ручная очередь
+                    # 7) иначе — скип not_target_role
                     if not is_ai_target_role(vacancy['title']):
+                        # Data/Database/Analytics/Researcher — в ручную очередь
+                        manual_trigger = has_manual_title_trigger(vacancy['title'])
+                        if manual_trigger:
+                            print(f"      🚩 {manual_trigger} в названии, в ручную очередь")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="pending_manual",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "vacancy_url": vacancy['url'],
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "triggers": [manual_trigger],
+                                        "description_preview": "(описание не загружали — отсев по title)",
+                                    },
+                                )
+                                _remember_in_index(vacancy)
+                            stats['skipped'] += 1
+                            continue
+
                         if has_ml_marker(vacancy['title']):
                             print(f"      🚩 ML без AI/LLM-контекста, в ручную очередь")
                             if metrics_sink:
@@ -929,21 +1142,6 @@ def main():
                     letter, addendums = build_letter(description, vacancy['title'])
                     addendum_label = "+" + ",".join(addendums) if addendums else "стандарт"
                     print(f"      📝 Шаблон [{addendum_label}] · {len(letter)} символов")
-                    if metrics_sink:
-                        metrics_sink.log_event(
-                            kind="apply",
-                            vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                            chat_url=vacancy['url'],
-                            payload={
-                                "letter": letter,
-                                "vacancy_url": vacancy['url'],
-                                "title": vacancy['title'],
-                                "employer": vacancy['employer'],
-                                "type": "standard" if not addendums else "standard+addendums",
-                                "addendums": addendums,
-                            },
-                        )
-                        _remember_in_index(vacancy)
 
                     if dry_run:
                         print("      🧪 [dry-run] отклик не отправлен, в БД не пишу")
@@ -957,6 +1155,22 @@ def main():
                     if result['status'] == 'success':
                         print(f"      ✅ Успех! ({result['reason']})")
                         stats['success'] += 1
+                        # Записываем в базу ТОЛЬКО после успешной отправки
+                        if metrics_sink:
+                            metrics_sink.log_event(
+                                kind="apply",
+                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                chat_url=vacancy['url'],
+                                payload={
+                                    "letter": letter,
+                                    "vacancy_url": vacancy['url'],
+                                    "title": vacancy['title'],
+                                    "employer": vacancy['employer'],
+                                    "type": "standard" if not addendums else "standard+addendums",
+                                    "addendums": addendums,
+                                },
+                            )
+                            _remember_in_index(vacancy)
                     elif result['status'] == 'skipped':
                         print(f"      ⏭️  Пропущено: {result['reason']}")
                         stats['skipped'] += 1

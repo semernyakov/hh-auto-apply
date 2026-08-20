@@ -96,18 +96,19 @@ def _start_worker(name: str) -> dict[str, Any]:
     log = open(cfg["log_file"], "a", buffering=1)
 
     env = os.environ.copy()
-    if not env.get("ANTHROPIC_API_KEY"):
+    # Проверяем OPENROUTER_API_KEY (используется вместо Anthropic)
+    if not env.get("OPENROUTER_API_KEY"):
         try:
             for line in Path.home().joinpath(".bashrc").read_text().splitlines():
                 line = line.strip()
-                if line.startswith("export ANTHROPIC_API_KEY="):
-                    env["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if line.startswith("export OPENROUTER_API_KEY="):
+                    env["OPENROUTER_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
                     break
         except Exception:
             pass
-    if not env.get("ANTHROPIC_API_KEY"):
+    if not env.get("OPENROUTER_API_KEY"):
         log.close()
-        return {"ok": False, "error": "ANTHROPIC_API_KEY не найден ни в env, ни в ~/.bashrc"}
+        return {"ok": False, "error": "OPENROUTER_API_KEY не найден ни в env, ни в ~/.bashrc"}
     if not env.get("DISPLAY"):
         env["DISPLAY"] = ":1"
 
@@ -340,6 +341,83 @@ def api_robot_questionnaire_send(event_id: int, body: dict = Body(...)) -> JSONR
 def api_positive_resolve(event_id: int) -> JSONResponse:
     ok = metrics.resolve_event(event_id, "positive_signal_handled", expected_kind="positive_signal")
     return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.post("/api/pending/{event_id}/view")
+def api_pending_view(event_id: int) -> JSONResponse:
+    """Пометить вакансию из ручной очереди как просмотренную."""
+    pendings = metrics.get_pending_manual()
+    pending = next((p for p in pendings if p["id"] == event_id), None)
+    if not pending:
+        return JSONResponse({"ok": False, "error": "событие не найдено или уже обработано"}, status_code=404)
+
+    metrics.log_event(
+        kind="pending_viewed",
+        vacancy=pending.get("vacancy", ""),
+        chat_url=pending.get("chat_url", ""),
+        payload={
+            "from_pending_id": event_id,
+            "title": (pending.get("payload") or {}).get("title", ""),
+            "employer": (pending.get("payload") or {}).get("employer", ""),
+        },
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/pending/{event_id}/apply")
+def api_pending_apply(event_id: int, body: dict = Body(...)) -> JSONResponse:
+    """Отправить отклик на вакансию из ручной очереди через playwright."""
+    letter = (body.get("letter") or "").strip()
+    if not letter:
+        return JSONResponse({"ok": False, "error": "пустое письмо"}, status_code=400)
+    if len(letter) > 2000:
+        return JSONResponse({"ok": False, "error": f"письмо слишком длинное ({len(letter)}/2000)"}, status_code=400)
+
+    pendings = metrics.get_pending_manual()
+    pending = next((p for p in pendings if p["id"] == event_id), None)
+    if not pending:
+        return JSONResponse({"ok": False, "error": "событие не найдено или уже обработано"}, status_code=404)
+
+    payload = pending.get("payload") or {}
+    vacancy_url = payload.get("vacancy_url") or pending.get("chat_url")
+    if not vacancy_url:
+        return JSONResponse({"ok": False, "error": "URL вакансии отсутствует"}, status_code=400)
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            ctx = browser.new_context(storage_state=str(SESSION_FILE))
+            page = ctx.new_page()
+            try:
+                result = apply_to_vacancy(page, vacancy_url, letter)
+            finally:
+                browser.close()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"playwright: {e}"}, status_code=500)
+
+    if result.get("status") == "success":
+        metrics.log_event(
+            kind="apply",
+            vacancy=pending.get("vacancy", ""),
+            chat_url=vacancy_url,
+            payload={
+                "letter": letter,
+                "vacancy_url": vacancy_url,
+                "title": payload.get("title", ""),
+                "employer": payload.get("employer", ""),
+                "type": "manual_from_pending_modal",
+                "send_result": result.get("reason"),
+                "from_pending_id": event_id,
+            },
+        )
+        metrics.resolve_event(event_id, "manual_applied")
+        return JSONResponse({"ok": True, "reason": result.get("reason", "")})
+
+    return JSONResponse(
+        {"ok": False, "error": f"{result.get('status')}: {result.get('reason', '')}"},
+        status_code=400,
+    )
 
 
 @app.post("/api/pending/{event_id}/resolve")
@@ -624,6 +702,69 @@ tr.chat-child-row.visible { display: table-row; }
 details.desc-fold { margin-bottom: 12px; }
 details.desc-fold > summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
 details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c10; border-radius: 6px; border: 1px solid #232733; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+
+/* расширенная статистика */
+.stats-grid {
+  display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 14px; padding: 14px 16px; background: var(--panel); border: 1px solid #232733; border-radius: 8px;
+}
+.stat-item { display: flex; flex-direction: column; gap: 4px; }
+.stat-item .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+.stat-item .value { font-size: 20px; font-weight: 600; color: var(--fg); }
+.stat-item .sub { color: var(--muted); font-size: 11px; }
+
+/* чекбокс просмотренного в pending */
+.viewed-checkbox {
+  width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent);
+}
+.viewed-row { opacity: 0.65; }
+.viewed-row td { background: rgba(139, 147, 167, 0.08); }
+
+/* модалка для pending с формой */
+.pending-modal {
+  background: var(--panel); border: 1px solid #2c3140; border-radius: 10px;
+  padding: 20px 24px; max-width: 780px; width: 92%; max-height: 86vh; overflow: auto;
+}
+.pending-modal h3 { margin: 0 0 12px; font-size: 16px; }
+.pending-modal .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
+.pending-modal .meta a { color: var(--accent); }
+.pending-modal .vacancy-desc {
+  background: #0a0c10; padding: 14px 16px; border-radius: 6px; border: 1px solid #232733;
+  white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.55;
+  margin-bottom: 16px; max-height: 220px; overflow: auto;
+}
+.pending-modal .editor-area {
+  width: 100%; min-height: 220px; padding: 12px 14px; border-radius: 6px;
+  border: 1px solid #2c3140; background: #0a0c10; color: var(--fg);
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: 13px;
+  line-height: 1.55; resize: vertical; box-sizing: border-box;
+}
+.pending-modal .editor-area:focus { outline: none; border-color: var(--accent); }
+.pending-modal .char-counter { color: var(--muted); font-size: 11px; margin-top: 4px; text-align: right; }
+.pending-modal .char-counter.warn { color: var(--warn); }
+.pending-modal .char-counter.over { color: var(--err); }
+.pending-modal .actions {
+  margin-top: 14px; display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+}
+.pending-modal .status { color: var(--muted); font-size: 12px; margin-right: auto; }
+.pending-modal .status.ok { color: var(--ok); }
+.pending-modal .status.err { color: var(--err); }
+.btn-apply { background: var(--ok); border-color: var(--ok); color: #fff; padding: 8px 16px; }
+.btn-apply:hover { background: #27ae60; }
+.btn-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-view { background: var(--accent); border-color: var(--accent); color: #fff; padding: 8px 16px; }
+.btn-view:hover { background: #4070e0; }
+.btn-dismiss { background: var(--panel-2); border-color: #6a7080; color: var(--muted); padding: 8px 16px; }
+.btn-dismiss:hover { background: #2a2f3a; color: var(--fg); }
+.modal-close {
+  float: right; background: transparent; border: 1px solid #2c3140; color: var(--fg);
+  width: 28px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px;
+}
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.show { display: flex; }
 </style>
 </head>
 <body>
@@ -668,6 +809,45 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
 </div>
 
 <main>
+  <!-- расширенная статистика -->
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-item">
+      <div class="label">Откликов за 1 час</div>
+      <div class="value" id="stat-1h">—</div>
+      <div class="sub" id="stat-1h-sub">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">Откликов за 24 часа</div>
+      <div class="value" id="stat-24h">—</div>
+      <div class="sub" id="stat-24h-sub">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">Откликов за 7 дней</div>
+      <div class="value" id="stat-7d">—</div>
+      <div class="sub" id="stat-7d-sub">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">Пропусков за 24 часа</div>
+      <div class="value" id="stat-skip-24h">—</div>
+      <div class="sub">skip</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">В ручную очередь за 24 часа</div>
+      <div class="value" id="stat-pending-24h">—</div>
+      <div class="sub">pending_manual</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">Лимит в сутки</div>
+      <div class="value" id="stat-limit">—</div>
+      <div class="sub">max_applies_per_day</div>
+    </div>
+    <div class="stat-item">
+      <div class="label">Осталось откликов сегодня</div>
+      <div class="value" id="stat-remaining">—</div>
+      <div class="sub" id="stat-remaining-sub">лимит - applies_24h</div>
+    </div>
+  </div>
+
   <div class="grid">
     <div class="card"><div class="label">Сегодня · стоимость</div><div class="value" id="m-today-cost">$0.0000</div><div class="sub" id="m-today-tokens">tokens 0 → 0</div></div>
     <div class="card"><div class="label">Всего · стоимость</div><div class="value" id="m-total-cost">$0.0000</div><div class="sub" id="m-total-tokens">tokens 0 → 0</div></div>
@@ -755,9 +935,9 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     <h2>📌 Очередь на ручной отклик <span class="muted" id="pending-count" style="font-weight:400;text-transform:none;letter-spacing:0">— 0</span></h2>
     <table id="pending" class="events-table">
       <thead><tr>
-        <th>Когда</th><th>Вакансия</th><th>Триггеры</th><th>Описание</th><th>Действия</th>
+        <th>✓</th><th>Когда</th><th>Вакансия</th><th>Триггеры</th><th>Описание</th><th>Действия</th>
       </tr></thead>
-      <tbody><tr><td colspan="5" class="muted">пусто</td></tr></tbody>
+      <tbody><tr><td colspan="6" class="muted">пусто</td></tr></tbody>
     </table>
   </section>
 
@@ -830,14 +1010,31 @@ details.desc-fold > div { margin-top: 8px; padding: 10px 12px; background: #0a0c
     </div>
   </section>
 
-  <div class="modal-backdrop" id="modal">
-    <div class="modal">
-      <button class="modal-close" id="modal-close">×</button>
-      <h3 id="modal-title">—</h3>
-      <div class="meta" id="modal-meta"></div>
-      <div class="body" id="modal-body">—</div>
+    <div class="modal-backdrop" id="modal">
+      <div class="modal">
+        <button class="modal-close" id="modal-close">×</button>
+        <h3 id="modal-title">—</h3>
+        <div class="meta" id="modal-meta"></div>
+        <div class="body" id="modal-body">—</div>
+      </div>
     </div>
-  </div>
+
+    <div class="modal-backdrop" id="pending-modal">
+      <div class="pending-modal">
+        <button class="modal-close" id="pending-modal-close">×</button>
+        <h3 id="pending-modal-title">—</h3>
+        <div class="meta" id="pending-modal-meta"></div>
+        <div class="vacancy-desc" id="pending-modal-desc">Описание вакансии</div>
+        <textarea class="editor-area" id="pending-modal-letter" placeholder="Текст сопроводительного письма..."></textarea>
+        <div class="char-counter" id="pending-modal-counter">0 / 2000</div>
+        <div class="actions">
+          <span class="status" id="pending-modal-status"></span>
+          <button class="btn btn-view" id="pending-btn-view">👁 Пометить как просмотрено</button>
+          <button class="btn btn-dismiss" id="pending-btn-dismiss">Пропустить</button>
+          <button class="btn btn-apply" id="pending-btn-apply">📤 Откликнуться</button>
+        </div>
+      </div>
+    </div>
 
   <section>
     <h2>📨 Лог откликов на вакансии</h2>
@@ -902,8 +1099,30 @@ async function refreshStatus(){
     $('#m-rep-app').textContent = `${s.replies} / ${s.applies}`;
     $('#m-skip-err').textContent = `${s.skips} / ${s.errors}`;
 
-    // лимиты
+    // расширенная статистика
+    const rates = d.rates || {windows: {}, last_runs: {}, now: Date.now()/1000};
+    const w1h = rates.windows['1h'] || {};
+    const w24h = rates.windows['24h'] || {};
+    const w7d = rates.windows['7d'] || {};
     const lim = d.limits || {};
+    const maxPerDay = lim.max_applies_per_day || 0;
+    const applies24h = w24h.apply || 0;
+    const remaining = Math.max(0, maxPerDay - applies24h);
+
+    $('#stat-1h').textContent = fmtNum(w1h.apply);
+    $('#stat-1h-sub').textContent = `+${w1h.manual_applied || 0} вручную`;
+    $('#stat-24h').textContent = fmtNum(applies24h);
+    $('#stat-24h-sub').textContent = `+${w24h.manual_applied || 0} вручную`;
+    $('#stat-7d').textContent = fmtNum(w7d.apply);
+    $('#stat-7d-sub').textContent = `+${w7d.manual_applied || 0} вручную`;
+    $('#stat-skip-24h').textContent = fmtNum(w24h.skip || 0);
+    $('#stat-pending-24h').textContent = fmtNum(w24h.pending_manual || 0);
+    $('#stat-limit').textContent = fmtNum(maxPerDay);
+    $('#stat-remaining').textContent = fmtNum(remaining);
+    $('#stat-remaining-sub').textContent = `${fmtNum(maxPerDay)} - ${fmtNum(applies24h)}`;
+    $('#stat-skip-24h-sub').textContent = `из ${w24h.skip || 0} skip`;
+
+    // лимиты
     $('#lim-apply-interval').textContent = fmtDuration(lim.apply_interval_sec);
     $('#lim-reply-interval').textContent = fmtDuration(lim.reply_interval_sec);
     $('#lim-delay').textContent = fmtDuration(lim.delay_between_applies_sec);
@@ -912,7 +1131,6 @@ async function refreshStatus(){
     $('#lim-dedup').textContent = (lim.dedup_window_days || 0) + ' дней';
 
     // активность по окнам
-    const rates = d.rates || {windows: {}, last_runs: {}, now: Date.now()/1000};
     const order = [['1h','за 1 час'], ['24h','за 24 часа'], ['7d','за 7 дней']];
     $('#rates-body').innerHTML = order.map(([k, label]) => {
       const w = rates.windows[k] || {};
@@ -1393,18 +1611,20 @@ async function refreshPending(){
     $('#pending-count').textContent = '— ' + d.pending.length;
     const tbody = $('#pending tbody');
     if (!d.pending.length){
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">пусто</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="muted">пусто</td></tr>';
       return;
     }
     tbody.innerHTML = d.pending.map(p => {
       const url = (p.payload && p.payload.vacancy_url) || p.chat_url || '';
       const triggers = (p.payload && p.payload.triggers) || [];
       const desc = (p.payload && p.payload.description_preview) || '';
+      const viewed = localStorage.getItem('pending_viewed_' + p.id) === '1';
       const link = url
         ? `<a class="row-link" href="${escapeHtml(url)}" target="_blank">${escapeHtml(p.vacancy || 'вакансия')}</a>`
         : escapeHtml(p.vacancy || '');
       const trigsHtml = triggers.map(t => `<span class="trigger">${escapeHtml(t)}</span>`).join('');
-      return `<tr data-id="${p.id}">
+      return `<tr data-id="${p.id}" class="${viewed ? 'viewed-row' : ''}">
+        <td><input type="checkbox" class="viewed-checkbox" data-id="${p.id}" ${viewed ? 'checked' : ''}></td>
         <td class="muted">${fmtTime(p.ts)}</td>
         <td>${link}</td>
         <td>${trigsHtml}</td>
@@ -1416,6 +1636,17 @@ async function refreshPending(){
       </tr>`;
     }).join('');
 
+    // Чекбоксы "просмотрено"
+    tbody.querySelectorAll('.viewed-checkbox').forEach(cb => {
+      cb.addEventListener('change', (ev) => {
+        ev.stopPropagation();
+        const id = cb.dataset.id;
+        if (cb.checked) localStorage.setItem('pending_viewed_' + id, '1');
+        else localStorage.removeItem('pending_viewed_' + id);
+        refreshPending();
+      });
+    });
+
     tbody.querySelectorAll('button[data-act]').forEach(btn => {
       btn.addEventListener('click', async (ev) => {
         ev.stopPropagation();
@@ -1426,7 +1657,8 @@ async function refreshPending(){
       });
     });
     tbody.querySelectorAll('tr[data-id]').forEach(tr => {
-      tr.addEventListener('click', () => {
+      tr.addEventListener('click', (ev) => {
+        if (ev.target.classList.contains('viewed-checkbox')) return;
         const id = parseInt(tr.dataset.id);
         const p = d.pending.find(x => x.id === id);
         if (p) openPendingModal(p);
@@ -1439,75 +1671,96 @@ function openPendingModal(p){
   const url = (p.payload && p.payload.vacancy_url) || p.chat_url || '';
   const triggers = (p.payload && p.payload.triggers) || [];
   const desc = (p.payload && p.payload.description_preview) || '';
+  const title = p.vacancy || 'вакансия';
+  const employer = (p.payload && p.payload.employer) || '';
   const time = new Date(p.ts * 1000).toLocaleString('ru-RU');
   const linkHtml = url ? `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(url)}</a>` : '<span class="muted">—</span>';
   const trigsHtml = triggers.map(t => `<span class="trigger">${escapeHtml(t)}</span>`).join(' ');
   const addendums = p.suggested_addendums || [];
   const addLabel = addendums.length ? `<span class="muted">(в шаблон добавлено: ${escapeHtml(addendums.join(', '))})</span>` : '';
+  
+  const fullTitle = employer ? `${title} · ${employer}` : title;
+  $('#pending-modal-title').textContent = fullTitle;
+  
   const meta = `
-    <div><b>Триггеры:</b> ${trigsHtml || '<span class="muted">—</span>'}</div>
+    <div><b>Триггеры:</b> ${trigsHtml || '<span class="muted">—</span>'} ${addLabel}</div>
     <div><b>Время:</b> ${escapeHtml(time)} · <b>Ссылка:</b> ${linkHtml}</div>
   `;
+  $('#pending-modal-meta').innerHTML = meta;
+  $('#pending-modal-desc').textContent = desc || 'Описание недоступно';
+  
   const draft = p.suggested_letter || '';
-  const descBlock = desc
-    ? `<details class="desc-fold"><summary>📄 Описание вакансии (превью)</summary><div>${escapeHtml(desc)}</div></details>`
-    : '';
-  const editor = `
-    ${descBlock}
-    <div class="muted" style="margin-bottom:6px">✍️ Текст письма ${addLabel}</div>
-    <textarea class="editor-area" id="editor-textarea">${escapeHtml(draft)}</textarea>
-    <div class="char-counter" id="char-counter">0 / 2000</div>
-    <div class="editor-actions">
-      <span class="editor-status" id="editor-status"></span>
-      <button class="btn btn-mini" id="editor-reset">↺ сбросить</button>
-      <button class="btn btn-mini dismiss" id="editor-dismiss">× не подходит</button>
-      <button class="btn btn-send" id="editor-send">📤 отправить</button>
-    </div>
-  `;
-  $('#modal-title').textContent = p.vacancy || 'вакансия';
-  $('#modal-meta').innerHTML = meta;
-  $('#modal-body').innerHTML = editor;
-  $('#modal-body').classList.remove('body');  // снимаем стиль pre
-  $('#modal').classList.add('show');
-
-  const ta = document.getElementById('editor-textarea');
-  const status = document.getElementById('editor-status');
-  const counter = document.getElementById('char-counter');
-  const sendBtn = () => document.getElementById('editor-send');
+  const ta = document.getElementById('pending-modal-letter');
+  ta.value = draft;
+  
+  const counter = document.getElementById('pending-modal-counter');
+  const status = document.getElementById('pending-modal-status');
+  const applyBtn = document.getElementById('pending-btn-apply');
+  const viewBtn = document.getElementById('pending-btn-view');
+  const dismissBtn = document.getElementById('pending-btn-dismiss');
+  
   function updateCounter(){
     const n = ta.value.length;
     counter.textContent = `${n} / 2000`;
     counter.className = 'char-counter' + (n > 2000 ? ' over' : (n > 1700 ? ' warn' : ''));
-    if (sendBtn()) sendBtn().disabled = (n === 0 || n > 2000);
+    if (applyBtn) applyBtn.disabled = (n === 0 || n > 2000);
   }
   ta.addEventListener('input', updateCounter);
   updateCounter();
+  
+  $('#pending-modal').classList.add('show');
   ta.focus();
-
-  document.getElementById('editor-reset').addEventListener('click', () => {
-    ta.value = draft;
-    updateCounter();
-    status.textContent = 'сброшено';
-    status.className = 'editor-status muted';
-  });
-
-  document.getElementById('editor-dismiss').addEventListener('click', async () => {
-    if (!confirm('Удалить вакансию из очереди без отклика?')) return;
-    const r = await fetch(`/api/pending/${p.id}/dismiss`, { method: 'POST' });
-    if (r.ok) { closeModal(); await refreshPending(); }
-    else { status.textContent = 'не удалось'; status.className = 'editor-status err'; }
-  });
-
-  document.getElementById('editor-send').addEventListener('click', async () => {
-    const letter = ta.value.trim();
-    if (!letter) { status.textContent = 'письмо пустое'; status.className = 'editor-status err'; return; }
-    if (!confirm('Отправить отклик с этим текстом? Действие необратимо.')) return;
-    document.getElementById('editor-send').disabled = true;
-    document.getElementById('editor-dismiss').disabled = true;
-    status.textContent = '⏳ открываю HH через Playwright, обычно 10-20 секунд...';
-    status.className = 'editor-status muted';
+  
+  // Кнопка "Пометить как просмотрено"
+  viewBtn.onclick = async () => {
     try {
-      const r = await fetch(`/api/pending/${p.id}/send`, {
+      const r = await fetch(`/api/pending/${p.id}/view`, { method: 'POST' });
+      if (r.ok) {
+        localStorage.setItem('pending_viewed_' + p.id, '1');
+        status.textContent = '✓ помечено как просмотренное';
+        status.className = 'status ok';
+        setTimeout(async () => { closeModalPending(); await refreshPending(); }, 800);
+      } else {
+        status.textContent = '✗ не удалось';
+        status.className = 'status err';
+      }
+    } catch(e) {
+      status.textContent = '✗ ' + e;
+      status.className = 'status err';
+    }
+  };
+  
+  // Кнопка "Пропустить"
+  dismissBtn.onclick = async () => {
+    if (!confirm('Удалить вакансию из очереди без отклика?')) return;
+    try {
+      const r = await fetch(`/api/pending/${p.id}/dismiss`, { method: 'POST' });
+      if (r.ok) {
+        status.textContent = '✓ пропущено';
+        status.className = 'status ok';
+        setTimeout(async () => { closeModalPending(); await refreshPending(); }, 800);
+      } else {
+        status.textContent = '✗ не удалось';
+        status.className = 'status err';
+      }
+    } catch(e) {
+      status.textContent = '✗ ' + e;
+      status.className = 'status err';
+    }
+  };
+  
+  // Кнопка "Откликнуться"
+  applyBtn.onclick = async () => {
+    const letter = ta.value.trim();
+    if (!letter) { status.textContent = 'письмо пустое'; status.className = 'status err'; return; }
+    if (!confirm('Отправить отклик с этим текстом? Действие необратимо.')) return;
+    applyBtn.disabled = true;
+    viewBtn.disabled = true;
+    dismissBtn.disabled = true;
+    status.textContent = '⏳ открываю HH через Playwright, обычно 10-20 секунд...';
+    status.className = 'status muted';
+    try {
+      const r = await fetch(`/api/pending/${p.id}/apply`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ letter }),
@@ -1515,22 +1768,28 @@ function openPendingModal(p){
       const d = await r.json();
       if (d.ok) {
         status.textContent = `✓ отправлено${d.reason ? ' · ' + d.reason : ''}`;
-        status.className = 'editor-status ok';
-        setTimeout(async () => { closeModal(); await Promise.all([refreshPending(), refreshEvents()]); }, 1200);
+        status.className = 'status ok';
+        setTimeout(async () => { closeModalPending(); await Promise.all([refreshPending(), refreshEvents()]); }, 1200);
       } else {
         status.textContent = '✗ ' + (d.error || 'ошибка');
-        status.className = 'editor-status err';
-        document.getElementById('editor-send').disabled = false;
-        document.getElementById('editor-dismiss').disabled = false;
+        status.className = 'status err';
+        applyBtn.disabled = false;
+        viewBtn.disabled = false;
+        dismissBtn.disabled = false;
       }
     } catch(e) {
       status.textContent = '✗ ' + e;
-      status.className = 'editor-status err';
-      document.getElementById('editor-send').disabled = false;
-      document.getElementById('editor-dismiss').disabled = false;
+      status.className = 'status err';
+      applyBtn.disabled = false;
+      viewBtn.disabled = false;
+      dismissBtn.disabled = false;
     }
-  });
+  };
 }
+
+function closeModalPending(){ $('#pending-modal').classList.remove('show'); }
+$('#pending-modal-close').addEventListener('click', closeModalPending);
+$('#pending-modal').addEventListener('click', (ev) => { if (ev.target.id === 'pending-modal') closeModalPending(); });
 
 const SIGNAL_LABEL = {
   interview: 'Интервью / созвон',
@@ -1802,6 +2061,95 @@ function openRobotQModal(it){
   });
 }
 
+async function updateStats(){
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const rates = d.rates?.windows || {};
+    const h1 = rates['1h'] || {}, h24 = rates['24h'] || {}, h7d = rates['7d'] || {};
+    const limit = d.limits?.max_applies_per_day || 50;
+    
+    const s = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
+    const remaining = Math.max(0, limit - (h24.apply || 0));
+    
+    s('stat-1h', h1.apply ?? 0);
+    s('stat-24h', h24.apply ?? 0);
+    s('stat-7d', h7d.apply ?? 0);
+    s('stat-limit', limit);
+    s('stat-remaining', remaining);
+    s('stat-skips', h24.skip ?? 0);
+    s('stat-pending', h24.pending_manual ?? 0);
+  } catch(e) { console.error('updateStats:', e); }
+}
+
+async function refreshRates(){
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const rates = d.rates?.windows || {};
+    const windows = ['1h', '24h', '7d'];
+    const tbody = document.getElementById('rates-body');
+    if (!tbody) return;
+    
+    tbody.innerHTML = windows.map(w => {
+      const data = rates[w] || {};
+      return `<tr>
+        <td><b>${w === '1h' ? '1 час' : w === '24h' ? '24 часа' : '7 дней'}</b></td>
+        <td>${data.apply ?? 0}</td>
+        <td>${data.reply ?? 0}</td>
+        <td>${data.boost ?? 0}</td>
+        <td>${data.duplicate ?? 0}</td>
+        <td>${data.skip ?? 0}</td>
+        <td>${data.error ?? 0}</td>
+        <td>${data.pending_manual ?? 0}</td>
+        <td>${data.rejection ?? 0}</td>
+        <td>${data.positive_signal ?? 0}</td>
+        <td>${data.robot_questionnaire ?? 0}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.error('refreshRates:', e); }
+}
+
+async function refreshRunSchedule(){
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const limits = d.limits || {};
+    const workers = d.workers || {};
+    
+    const fmtInterval = (sec) => {
+      if (!sec) return '—';
+      const m = Math.round(sec / 60);
+      if (m < 60) return m + ' мин';
+      const h = (sec / 3600).toFixed(1);
+      return h + ' ч';
+    };
+    
+    const setRun = (name, label) => {
+      const w = workers[name] || {};
+      const whenEl = document.getElementById(`run-${name}-when`);
+      const nextEl = document.getElementById(`run-${name}-next`);
+      if (whenEl) whenEl.textContent = w.running ? `✓ работает (PID ${w.pid})` : '—';
+      if (nextEl) nextEl.textContent = `интервал ${fmtInterval(limits[`${name}_interval_sec`])}`;
+    };
+    
+    setRun('apply', 'Отклики');
+    setRun('reply', 'Ответы');
+    setRun('boost', 'Подъём');
+    
+    // Лимиты
+    const setLim = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
+    setLim('lim-apply-interval', fmtInterval(limits.apply_interval_sec));
+    setLim('lim-reply-interval', fmtInterval(limits.reply_interval_sec));
+    setLim('lim-boost-interval', fmtInterval(limits.boost_interval_sec));
+    setLim('lim-delay-apply', `${limits.delay_apply_min_sec}–${limits.delay_apply_max_sec} сек`);
+    setLim('lim-max-chats', limits.max_chats_per_run ?? '—');
+    setLim('lim-max-pages', limits.max_pages ?? '—');
+    setLim('lim-dedup', `${limits.dedup_window_days} дн.`);
+    setLim('lim-boost-interval-detail', `${fmtInterval(limits.boost_interval_sec)} (HH-кулдаун 4 ч)`);
+  } catch(e) { console.error('refreshRunSchedule:', e); }
+}
+
 async function tick(){
   await Promise.all([
     refreshStatus(),
@@ -1813,6 +2161,9 @@ async function tick(){
     refreshLog('apply'),
     refreshLog('reply'),
     refreshLog('boost'),
+    updateStats(),
+    refreshRates(),
+    refreshRunSchedule(),
   ]);
 }
 tick();
