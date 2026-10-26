@@ -89,7 +89,7 @@ MAX_APPLIES_PER_DAY = int(os.getenv("HH_MAX_APPLIES_PER_DAY", "100"))
 # Рабочие часы (локальное время сервера, МСК) [start, end) — вне окна бот НЕ
 # откликается: массовые отклики ночью — яркий признак бота.
 WORK_HOUR_START = int(os.getenv("HH_WORK_HOUR_START", "8"))
-WORK_HOUR_END = int(os.getenv("HH_WORK_HOUR_END", "21"))
+WORK_HOUR_END = int(os.getenv("HH_WORK_HOUR_END", "23"))
 
 # Джиттер интервала между обходами (доля): реальная пауза = interval * (1 ± JITTER).
 APPLY_INTERVAL_JITTER = float(os.getenv("HH_APPLY_INTERVAL_JITTER", "0.25"))
