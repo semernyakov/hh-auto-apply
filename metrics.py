@@ -502,7 +502,8 @@ def load_applied_index(days: int = 60) -> dict[str, Any]:
         rows = c.execute(
             """SELECT ts, kind, vacancy, chat_url, payload_json
                FROM events
-               WHERE kind IN ('apply', 'pending_manual', 'manual_applied', 'manual_dismissed')
+               WHERE (kind IN ('apply', 'pending_manual', 'manual_applied', 'manual_dismissed')
+                      OR (kind = 'skip' AND json_extract(payload_json, '$.reason') = 'applied_on_hh'))
                  AND ts >= ?
                ORDER BY ts DESC""",
             (since,),

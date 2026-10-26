@@ -9,6 +9,7 @@ HH.ru Автооткликатор
 3. Запусти: python3 auto_apply_template.py
 """
 
+import collections
 import fcntl
 import os
 import json
@@ -122,6 +123,11 @@ def _seconds_until_work_hours() -> int:
 # по нашему профилю — добавляем как ещё один источник к SEARCH_QUERIES.
 # HH_RESUME_ID в окружении перекрывает значение из раздела «Резюме».
 RESUME_ID = os.getenv("HH_RESUME_ID") or PROFILE["resume_id"]
+
+
+def resume_ids() -> list[str]:
+    """Коды резюме для выдачи «по резюме»: через запятую или пробел."""
+    return [r for r in re.split(r"[,\s]+", RESUME_ID or "") if r]
 
 # Мы ищем только удалёнку. При True офисные вакансии (сработал ON_SITE_TRIGGERS)
 # сразу пропускаются (skip), а не копятся в ручной очереди pending_manual.
@@ -855,6 +861,35 @@ def hh_logged_in(page) -> bool | None:
 SESSION_EXPIRED = "сессия HH истекла — войдите заново: .venv/bin/python hh_login.py"
 
 
+# Следы прошлого отклика на странице вакансии: бот мог о нём не знать
+# (отклик вручную, другим резюме, больше 60 дней назад) — тогда нет «Откликнуться».
+APPLIED_ON_HH_MARKERS = ("Вы откликнулись", "Вам отказали", "Отклик другим резюме", "Вас пригласили")
+
+# Ошибки, при которых отклик пытались отправить, но он не ушёл: пишутся в БД
+# (kind='error', where='apply') и сохраняют снимок страницы — один последний на причину.
+CRITICAL_APPLY_ERRORS = ("no_textarea", "Кнопка не найдена", "no_submit_button", "text_insert_failed")
+APPLY_FAILURES_DIR = os.path.join(N8N_FILES_DIR, "apply_failures")
+
+
+def _applied_on_hh(page) -> str:
+    for t in APPLIED_ON_HH_MARKERS:
+        if page.locator(f"text={t}").count() > 0:
+            return t
+    return ""
+
+
+def _save_failure_snapshot(page, reason: str, url: str) -> None:
+    """Снимок страницы при критичной ошибке отклика — перезаписывается, один на причину."""
+    try:
+        os.makedirs(APPLY_FAILURES_DIR, exist_ok=True)
+        name = re.sub(r"[^\w-]+", "_", reason)
+        page.screenshot(path=os.path.join(APPLY_FAILURES_DIR, f"{name}.png"), full_page=True)
+        with open(os.path.join(APPLY_FAILURES_DIR, f"{name}.txt"), "w", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{url}\n{page.url}\n")
+    except Exception as e:
+        print(f"      ⚠️  Снимок не сохранён: {e}")
+
+
 def _apply_confirmed(page) -> bool:
     return any(
         page.locator(f"text={t}").count() > 0
@@ -892,13 +927,21 @@ def _submit_button(page, field=None):
 
 def apply_to_vacancy(page, url: str, message: str) -> dict:
     """Откликается на вакансию с сопроводительным письмом"""
+    result = _apply_to_vacancy(page, url, message)
+    if result.get("status") == "error" and result.get("reason") in CRITICAL_APPLY_ERRORS:
+        _save_failure_snapshot(page, result["reason"], url)
+    return result
+
+
+def _apply_to_vacancy(page, url: str, message: str) -> dict:
     try:
         _safe_goto(page, url, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(3000)
 
-        # Уже откликались?
-        if page.locator("text=Вы откликнулись").count() > 0:
-            return {"status": "skipped", "reason": "Уже откликались"}
+        # Уже откликались — в том числе мимо бота (вручную, другим резюме)?
+        mark = _applied_on_hh(page)
+        if mark:
+            return {"status": "already_applied", "reason": f"Уже откликались на HH («{mark}»)"}
 
         # Вакансия с вопросами скрининга — стандартное письмо не подойдёт,
         # отправляем в ручную очередь с пометкой.
@@ -1119,13 +1162,14 @@ def main():
         return
     
     print(f"\n📋 Поисковые запросы: {', '.join(SEARCH_QUERIES)}")
-    if RESUME_ID:
-        print(f"🎯 + HH-рекомендации по резюме {RESUME_ID[:8]}…")
+    if resume_ids():
+        print(f"🎯 + HH-рекомендации по резюме: {', '.join(r[:8] + '…' for r in resume_ids())}")
     print(f"📄 Страниц на запрос: {MAX_PAGES}")
     print(f"⏱️  Пауза между откликами: {DELAY_APPLY_MIN}–{DELAY_APPLY_MAX} сек (рандом)")
     print(f"🗓️  Рабочие часы: {WORK_HOUR_START:02d}:00–{WORK_HOUR_END:02d}:00 · суточный лимит: {MAX_APPLIES_PER_DAY}")
     
     stats = {"success": 0, "skipped": 0, "error": 0}
+    error_reasons: collections.Counter = collections.Counter()
 
     metrics_sink = None if dry_run else _metrics
     applied_index = _metrics.load_applied_index() if _metrics else {"by_vacancy_id": {}, "by_employer_title": {}}
@@ -1159,11 +1203,12 @@ def main():
             {"label": f"🔍 Поиск: {q}", "query": q, "source": f"query:{n}"}
             for n, q in enumerate(SEARCH_QUERIES, 1)
         ]
-        if RESUME_ID:
+        # HH_RESUME_ID может содержать несколько кодов через запятую — выдача по каждому резюме.
+        for rid in resume_ids():
             sources.append({
-                "label": f"🎯 HH-рекомендации по резюме {RESUME_ID[:8]}…",
-                "resume_id": RESUME_ID,
-                "source": "resume",
+                "label": f"🎯 HH-рекомендации по резюме {rid[:8]}…",
+                "resume_id": rid,
+                "source": f"resume:{rid[:6]}",
             })
 
         try:
@@ -1397,6 +1442,24 @@ def main():
                         elif result['status'] == 'skipped':
                             print(f"      ⏭️  Пропущено: {result['reason']}")
                             stats['skipped'] += 1
+                        elif result['status'] == 'already_applied':
+                            print(f"      ⏭️  {result['reason']}, пропускаю")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="skip",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "reason": "applied_on_hh",
+                                        "trigger": result['reason'],
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                    },
+                                )
+                            _remember_in_index(vacancy)
+                            stats['skipped'] += 1
                         elif result['status'] == 'has_questions':
                             print(f"      🚩 {result['reason']} — в ручную очередь")
                             if metrics_sink:
@@ -1419,6 +1482,21 @@ def main():
                         else:
                             print(f"      ❌ Ошибка: {result['reason']}")
                             stats['error'] += 1
+                            error_reasons[result['reason'][:60]] += 1
+                            if metrics_sink and result['reason'] in CRITICAL_APPLY_ERRORS:
+                                metrics_sink.log_event(
+                                    kind="error",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "where": "apply",
+                                        "error": result['reason'],
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                    },
+                                )
                     
                         d = _apply_delay()
                         print(f"      ⏳ Пауза {d:.0f} сек...")
@@ -1435,6 +1513,8 @@ def main():
     print(f"   ✅ Успешно: {stats['success']}")
     print(f"   ⏭️  Пропущено: {stats['skipped']}")
     print(f"   ❌ Ошибок: {stats['error']}")
+    for reason, n in error_reasons.most_common():
+        print(f"      · {reason}: {n}")
     print("="*50 + "\n")
 
 
