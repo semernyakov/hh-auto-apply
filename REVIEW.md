@@ -5,7 +5,7 @@
 ### 1. Resource Leak in resume_boost.py
 **Location:** Lines 459-467, 482-490  
 **Severity:** P1 - Resource Leak  
-**Status:** ❌ Not Fixed
+**Status:** ✅ Исправлено (2026-10-26): в `main()` файл закрывается в `finally`, перед этим потоки возвращаются на `sys.__stdout__`/`sys.__stderr__`. В `watch_loop()` файл открыт на всё время жизни процесса — это не утечка.
 
 **Problem:** File handles are opened but never closed, causing resource leaks.
 
@@ -35,7 +35,7 @@ finally:
 ### 2. Incomplete Error Handling in auto_apply_template.py
 **Location:** Lines 494-502  
 **Severity:** P1 - Broken Code  
-**Status:** ❌ Not Fixed
+**Status:** ⚪ Не подтвердилось (2026-10-26): блок `_metrics.log_event(kind="error", ...)` в `generate_cover_letter` завершён, файл парсится.
 
 **Problem:** Error logging code is cut off mid-function call, leaving incomplete code.
 
@@ -56,7 +56,7 @@ if _metrics:
 ### 3. Race Condition in Makefile Dashboard Startup
 **Location:** Makefile lines 15-29  
 **Severity:** P2 - Race Condition  
-**Status:** ❌ Not Fixed
+**Status:** ⚪ Не актуально (2026-10-26): дашборд запускает один пользователь локально, повторный `make start` видит живой PID.
 
 **Problem:** Between checking if process is running and writing PID file, another process could start.
 
@@ -80,7 +80,7 @@ else \
 ### 4. Security: API Key Exposure in dashboard.py
 **Location:** Lines 99-111  
 **Severity:** P2 - Security  
-**Status:** ❌ Not Fixed
+**Status:** ✅ Исправлено (2026-10-26): чтение `~/.bashrc` убрано, ключ берётся из `.env` (`load_dotenv()` при импорте `auto_apply_template`). Переменные окружения в `ps` не видны.
 
 **Problem:** Reads API key from ~/.bashrc without validation, passes to subprocess environment (visible in process listing).
 
@@ -102,7 +102,7 @@ for line in Path.home().joinpath(".bashrc").read_text().splitlines():
 ### 5. Silent Error Suppression in resume_boost.py
 **Location:** Lines 207-262 (_dismiss_modals function)  
 **Severity:** P2 - Debugging Difficulty  
-**Status:** ❌ Not Fixed
+**Status:** ✅ Исправлено (2026-10-26): исключения в `resume_boost.py` логируются, тексты сообщений выверены.
 
 **Problem:** Multiple bare `except Exception` blocks that silently suppress errors.
 
@@ -124,7 +124,7 @@ for _ in range(max_attempts):
 ### 6. Fragile API Key Extraction in dashboard.py
 **Location:** Lines 102-108  
 **Severity:** P2 - Fragility  
-**Status:** ❌ Not Fixed
+**Status:** ✅ Исправлено вместе с #4.
 
 **Problem:** Parses ~/.bashrc with simple string splitting, breaks easily if format changes.
 
@@ -142,14 +142,6 @@ if line.startswith("export OPENROUTER_API_KEY="):
 
 ## Summary
 
-- **P1 Issues:** 2 (Resource leak, incomplete code)
-- **P2 Issues:** 4 (Race condition, security, error handling, fragility)
-- **Total Critical Issues:** 6
-
-**Recommended Action Order:**
-1. Fix P1 #2 (incomplete code) - blocks execution
-2. Fix P1 #1 (resource leak) - prevents resource exhaustion
-3. Fix P2 #4 (security) - prevents credential exposure
-4. Fix P2 #3 (race condition) - prevents duplicate processes
-5. Fix P2 #5 (error suppression) - improves debuggability
-6. Fix P2 #6 (fragile parsing) - improves robustness
+- Исправлено: #1, #4, #5, #6.
+- Не подтвердилось / не актуально: #2, #3.
+- Открытых замечаний нет.
