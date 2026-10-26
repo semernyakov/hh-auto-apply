@@ -29,7 +29,7 @@ from auto_apply_template import (
     ANTHROPIC_MODEL,
     MY_PROFILE,
     SESSION_FILE,
-    _SAVED_ALL_PROXY,
+    launch_browser,
     _acquire_singleton_lock,
 )
 import metrics
@@ -202,6 +202,33 @@ def get_last_processed_meta(chat_url: str) -> tuple[str, float, str] | None:
     except Exception:
         tail = ""
     return str(kind), float(ts), tail or ""
+
+
+def get_chats_to_retry(days: int = 7, limit: int = 10, max_attempts: int = 3) -> list[tuple[str, str]]:
+    """Чаты, где последняя запись — ошибка модели или неотправленный ответ.
+    Открытый чат HH уже пометил прочитанным, фильтр «непрочитанные» его больше
+    не вернёт — подбираем такие из БД."""
+    try:
+        with sqlite3.connect(metrics.DB_PATH, timeout=10) as c:
+            rows = c.execute(
+                """SELECT e.chat_url, MAX(e.vacancy), MAX(e.ts) AS last_ts FROM events e
+                   WHERE ((e.kind = 'error' AND json_extract(e.payload_json, '$.retryable') = 1)
+                          OR (e.kind = 'reply_unsent'
+                              AND json_extract(e.payload_json, '$.reason') != 'dry_run'))
+                     AND e.chat_url LIKE 'https://hh.ru/chat/%' AND e.ts > ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM events x
+                         WHERE x.chat_url = e.chat_url AND x.ts > e.ts
+                           AND x.kind IN ('reply', 'skip', 'rejection',
+                                          'positive_signal', 'robot_questionnaire'))
+                   GROUP BY e.chat_url
+                   HAVING COUNT(*) < ?
+                   ORDER BY last_ts DESC LIMIT ?""",
+                (time.time() - days * 86400, max_attempts, limit),
+            ).fetchall()
+    except Exception:
+        return []
+    return [(url, vac or "") for url, vac, _ in rows]
 
 
 def _last_incoming_block(history: str) -> str:
@@ -428,8 +455,21 @@ def no_reply_needed(chat_history: str) -> str:
     return ""
 
 
+class LLMUnavailable(Exception):
+    """Модель не ответила: обход прерываем, чтобы не открывать (и не помечать
+    прочитанными) остальные чаты впустую."""
+
+
+# Событие reply последней генерации — main() пишет его только после реальной
+# отправки. Иначе dry-run и неудачная отправка включают cooldown и попадают в
+# «наши прошлые ответы».
+LAST_REPLY_EVENT: dict | None = None
+
+
 def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "") -> str:
     """Генерирует ответ через Claude Haiku 4.5 на основе MY_PROFILE и истории чата."""
+    global LAST_REPLY_EVENT
+    LAST_REPLY_EVENT = None
     # Hard guard: если последний блок history принадлежит нам — отвечать не на что.
     # Это страховка на случай, если парсер уже отметил блок как [Я], либо если
     # текст последнего блока совпадает с нашим прошлым ответом (защита от
@@ -655,7 +695,7 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
             return "SKIP"
 
         skip = is_skip_response(text)
-        metrics.log_event(
+        event = dict(
             kind="skip" if skip else "reply",
             model=ANTHROPIC_MODEL,
             tokens_in=tin,
@@ -668,16 +708,26 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
                 "history_tail": history_snippet,
             },
         )
-        return "SKIP" if skip else text
+        if skip:
+            metrics.log_event(**event)
+            return "SKIP"
+        LAST_REPLY_EVENT = event
+        return text
     except Exception as e:
         print(f"  ⚠️  Ошибка генерации ответа: {e}")
+        # Сеть/таймаут (нет status_code), ключ, лимиты, перегрузка — модель недоступна
+        # целиком. 400 и прочие 4xx — проблема конкретного запроса, обход не рвём.
+        status = getattr(e, "status_code", None)
+        retryable = status is None or status in (401, 403, 429) or status >= 500
         metrics.log_event(
             kind="error",
             model=ANTHROPIC_MODEL,
             vacancy=vacancy_title,
             chat_url=chat_url,
-            payload={"error": str(e)[:500]},
+            payload={"error": str(e)[:500], "where": "generate_reply", "retryable": retryable},
         )
+        if retryable:
+            raise LLMUnavailable(str(e)) from e
         return "SKIP"
 
 
@@ -841,7 +891,8 @@ def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:
     if any(m in tl for m in OWN_TEXT_MARKERS):
         return True
     for prev in prev_self_replies:
-        head = (prev or "").strip()[:60].lower()
+        # текст чата приходит со схлопнутыми абзацами (get_chat_payload) — так же и здесь
+        head = re.sub(r"\n\s*\n+", "\n", (prev or "").strip())[:60].lower()
         if head and head in tl:
             return True
     return False
@@ -944,6 +995,28 @@ def detect_positive_signal(history: str) -> tuple[str, str] | None:
             if m in low:
                 return sig_type, m
     return None
+
+
+HARD_REJECT_MARKERS = (
+    "отказ", "выбрали другого", "выбрали кандидат", "не готовы рассм",
+    "не сможем рассм", "не смогли рассм", "отклон", "вынуждены отказать",
+    "остановили выбор", "сделали выбор в пользу", "решили двигаться дальше",
+    "двигаться дальше с кандид", "приняли в работу другого", "уже выбрали",
+    "не готовы пригласить", "не можем пригласить",
+)
+
+
+def _last_block_if_incoming(history: str) -> str:
+    blocks = [b.strip() for b in (history or "").strip().split("\n\n") if b.strip()]
+    if not blocks or blocks[-1].startswith(SELF_ROLE_PREFIX):
+        return ""
+    return blocks[-1].lower()
+
+
+def is_hard_rejection(history: str) -> bool:
+    """Однозначный отказ — его не перебивает маркер приглашения в том же сообщении."""
+    last = _last_block_if_incoming(history)
+    return bool(last) and any(m in last for m in HARD_REJECT_MARKERS)
 
 
 def is_rejection(history: str) -> bool:
@@ -1182,7 +1255,9 @@ def get_chat_payload(page, chat_url: str, fallback_title: str = "") -> dict:
         if not msg_id.isdigit() or msg_id in seen_ids:
             continue
         seen_ids.add(msg_id)
-        text = (m.get("text") or "").strip()
+        # Абзацы внутри сообщения схлопываем: история режется на блоки по "\n\n",
+        # и иначе хвостовые абзацы теряют префикс [Роль] (анкеты, guard «наш блок»)
+        text = re.sub(r"\n\s*\n+", "\n", (m.get("text") or "").strip())
         if not text:
             continue
         own = m.get("ownByClass")
@@ -1281,31 +1356,21 @@ def main():
 
     stats = {"replied": 0, "skipped": 0, "errors": 0}
 
-    proxy = os.getenv("HH_PROXY") or _SAVED_ALL_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     headless = os.getenv("HH_HEADLESS", "").lower() in ("1", "true", "yes")
-    launch_kwargs = {"headless": headless, "slow_mo": 0 if headless else 300}
-    # Add Chrome args to avoid sandbox issues in some environments
-    launch_kwargs["args"] = [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-    ]
-    # Use system Chromium if specified
-    chrom_exec = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-    if chrom_exec:
-        launch_kwargs["executable_path"] = chrom_exec
-    if proxy:
-        launch_kwargs["proxy"] = {"server": proxy}
-        print(f"🌐 Использую прокси: {proxy}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_kwargs)
+        browser = launch_browser(p, headless)
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
 
         print("\n🔍 Открываю список чатов...")
         chats = find_unread_chats(page)
         print(f"📨 Непрочитанных чатов: {len(chats)}\n")
+        seen = {u for u, _ in chats}
+        retry = [(u, t) for u, t in get_chats_to_retry() if u not in seen]
+        if retry:
+            print(f"🔁 Повтор чатов без ответа (ошибка/не отправлено): {len(retry)}\n")
+            chats += retry
 
         for i, (chat_url, preview) in enumerate(chats, 1):
             print(f"[{i}/{len(chats)}] {preview or chat_url}")
@@ -1332,21 +1397,15 @@ def main():
                         print(f"    | {b[:300]}")
                     print("    ── /история ──")
 
-                if is_rejection(payload["history"]):
-                    print("    🚫 Отказ работодателя, не отвечаю")
-                    metrics.log_event(
-                        kind="rejection",
-                        vacancy=payload["title"],
-                        chat_url=chat_url,
-                        payload={
-                            "history_len": len(payload["history"]),
-                            "history_tail": payload["history"][-2000:],
-                        },
-                    )
-                    stats["skipped"] += 1
-                    continue
-
+                # Явный отказ («выбрали другого») сильнее любых маркеров приглашения;
+                # конкретное приглашение/запрос контакта сильнее мягких «к сожалению»,
+                # «не подходит» («если время не подходит — напишите»).
                 positive = detect_positive_signal(payload["history"])
+                if positive and (
+                    is_hard_rejection(payload["history"])
+                    or (positive[0] == "under_review" and is_rejection(payload["history"]))
+                ):
+                    positive = None
                 if positive:
                     sig_type, trigger = positive
                     print(f"    🎯 Положительный сигнал ({sig_type}: {trigger!r}) — кладу в очередь, не отвечаю")
@@ -1379,6 +1438,20 @@ def main():
                     stats["skipped"] += 1
                     continue
 
+                if is_rejection(payload["history"]):
+                    print("    🚫 Отказ работодателя, не отвечаю")
+                    metrics.log_event(
+                        kind="rejection",
+                        vacancy=payload["title"],
+                        chat_url=chat_url,
+                        payload={
+                            "history_len": len(payload["history"]),
+                            "history_tail": payload["history"][-2000:],
+                        },
+                    )
+                    stats["skipped"] += 1
+                    continue
+
                 reply = generate_reply(payload["history"], payload["title"], chat_url=chat_url)
 
                 if is_skip_response(reply) or len(reply) < 5:
@@ -1388,20 +1461,38 @@ def main():
 
                 print(f"    📝 Ответ: {reply[:100]}...")
 
+                event = LAST_REPLY_EVENT
                 if DRY_RUN:
                     print("    🧪 DRY-RUN, не отправляю")
                     stats["replied"] += 1
+                    sent, unsent_reason = False, "dry_run"
                 else:
-                    if post_reply(page, reply):
+                    try:
+                        sent = post_reply(page, reply)
+                    except Exception as e:
+                        print(f"    ⚠️  Сбой отправки: {e}")
+                        sent = False
+                    unsent_reason = "" if sent else "send_failed"
+                    if sent:
                         print("    ✅ Отправлено")
                         stats["replied"] += 1
                     else:
                         print("    ❌ Не удалось отправить")
                         stats["errors"] += 1
+                if event:
+                    if not sent:
+                        # токены учтены, но cooldown и «наши ответы» не трогаем
+                        event["kind"] = "reply_unsent"
+                        event["payload"]["reason"] = unsent_reason
+                    metrics.log_event(**event)
 
                 d = _chat_delay()
                 print(f"    ⏳ Пауза {d:.0f} сек...")
                 time.sleep(d)
+            except LLMUnavailable as e:
+                print(f"    ❌ Модель недоступна ({str(e)[:120]}) — прерываю обход, чат повторю в следующий раз")
+                stats["errors"] += 1
+                break
             except Exception as e:
                 print(f"    ❌ Ошибка: {e}")
                 stats["errors"] += 1
