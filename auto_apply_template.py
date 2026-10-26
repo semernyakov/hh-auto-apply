@@ -17,7 +17,6 @@ import sys
 import time
 from pathlib import Path
 from anthropic import Anthropic
-from openai import OpenAI
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 from dotenv import load_dotenv
 
@@ -67,11 +66,6 @@ except Exception:
 # Приоритет: переменная окружения ANTHROPIC_API_KEY, потом значение ниже.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or "YOUR_ANTHROPIC_API_KEY"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-
-# OpenRouter API ключ (получить на https://openrouter.ai/keys)
-# Приоритет: переменная окружения OPENROUTER_API_KEY, потом значение ниже.
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_OPENROUTER_API_KEY"
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL") or "google/gemma-4-31b-it:free"
 
 # Сколько страниц парсить для каждого запроса (1 страница = ~20 вакансий)
 # Увеличь до 3-5 для большего охвата, но это замедлит прогон.
@@ -434,18 +428,11 @@ def has_ml_marker(title: str) -> bool:
 os.environ.pop("all_proxy", None)
 os.environ.pop("ALL_PROXY", None)
 
-# Anthropic клиент
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# OpenRouter клиент (OpenAI-совместимый API)
-openrouter_client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
+client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def generate_cover_letter(title: str, employer: str, description: str, vacancy_url: str = "") -> str:
-    """Генерирует сопроводительное письмо через OpenRouter (Gemma 4 31B)"""
+    """Генерирует сопроводительное письмо через Claude Haiku 4.5"""
     prompt = f"""Напиши сопроводительное письмо для отклика на вакансию. Пиши как живой человек, не как робот.
 
 СТРУКТУРА ПИСЬМА:
@@ -474,20 +461,20 @@ def generate_cover_letter(title: str, employer: str, description: str, vacancy_u
 Напиши только текст письма, без комментариев."""
 
     try:
-        response = openrouter_client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
             max_tokens=350,
             temperature=0.8,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.choices[0].message.content.strip()
+        text = response.content[0].text.strip()
         if _metrics:
             usage = getattr(response, "usage", None)
             _metrics.log_event(
                 kind="apply",
-                model=OPENROUTER_MODEL,
-                tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
-                tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                model=ANTHROPIC_MODEL,
+                tokens_in=getattr(usage, "input_tokens", 0) if usage else 0,
+                tokens_out=getattr(usage, "output_tokens", 0) if usage else 0,
                 vacancy=f"{title} · {employer}",
                 chat_url=vacancy_url,
                 payload={"letter": text, "vacancy_url": vacancy_url, "title": title, "employer": employer},
@@ -498,7 +485,7 @@ def generate_cover_letter(title: str, employer: str, description: str, vacancy_u
         if _metrics:
             _metrics.log_event(
                 kind="error",
-                model=OPENROUTER_MODEL,
+                model=ANTHROPIC_MODEL,
                 vacancy=f"{title} · {employer}",
                 chat_url=vacancy_url,
                 payload={"error": str(e)[:500], "vacancy_url": vacancy_url},
@@ -875,10 +862,10 @@ def main():
     print("="*50)
 
     # Проверка настроек
-    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
-        print("\n❌ Ошибка: Укажи свой OpenRouter API ключ!")
-        print("   Получи на https://openrouter.ai/keys")
-        print("   Или задай OPENROUTER_API_KEY в .env файле")
+    if ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY":
+        print("\n❌ Ошибка: Укажи свой Anthropic API ключ!")
+        print("   Получи на https://console.anthropic.com/settings/keys")
+        print("   Или задай ANTHROPIC_API_KEY в env / .env")
         return
 
     if "YOUR_SEARCH_QUERY" in SEARCH_QUERIES[0]:

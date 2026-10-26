@@ -21,15 +21,12 @@ import sqlite3
 import sys
 import time
 from anthropic import Anthropic
-from openai import OpenAI
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
 
 from auto_apply_template import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MODEL,
-    OPENROUTER_API_KEY,
-    OPENROUTER_MODEL,
     MY_PROFILE,
     SESSION_FILE,
     _acquire_singleton_lock,
@@ -71,11 +68,7 @@ WATCH_INTERVAL = int(os.getenv("HH_WATCH_INTERVAL_SEC", "1800"))  # 30 мину�
 # Джиттер интервала обхода чатов (доля): реальная пауза = WATCH_INTERVAL * (1 ± JITTER)
 WATCH_INTERVAL_JITTER = float(os.getenv("HH_WATCH_INTERVAL_JITTER", "0.2"))
 
-# OpenRouter клиент (OpenAI-совместимый API)
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
+client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 # --- Антиповтор проектов в рамках одного чата --------------------------------
@@ -611,20 +604,28 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
 Сформулируй ответ соискателя на последнее сообщение от работодателя. Если отвечать не нужно, верни SKIP."""
 
     try:
-        # OpenRouter (Gemma 4 31B) — OpenAI-совместимый API
-        response = client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+        # Prompt caching: SYSTEM_PROMPT + профиль неизменны между вызовами, поэтому
+        # держим их отдельными system-блоками с cache_control на последнем — весь
+        # префикс кэшируется (cache-read ≈ 0.1× цены). Переменная часть (вакансия,
+        # история чата) остаётся в user-сообщении и не ломает кэш.
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
             max_tokens=500,
             temperature=0.5,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT + "\n\nПРОФИЛЬ:\n" + MY_PROFILE},
-                {"role": "user", "content": user_msg},
+            system=[
+                {"type": "text", "text": SYSTEM_PROMPT},
+                {
+                    "type": "text",
+                    "text": "ПРОФИЛЬ:\n" + MY_PROFILE,
+                    "cache_control": {"type": "ephemeral"},
+                },
             ],
+            messages=[{"role": "user", "content": user_msg}],
         )
-        text = response.choices[0].message.content.strip()
+        text = response.content[0].text.strip()
         usage = getattr(response, "usage", None)
-        tin = getattr(usage, "prompt_tokens", 0) if usage else 0
-        tout = getattr(usage, "completion_tokens", 0) if usage else 0
+        tin = getattr(usage, "input_tokens", 0) if usage else 0
+        tout = getattr(usage, "output_tokens", 0) if usage else 0
 
         history_snippet = chat_history[-2000:] if chat_history else ""
 
@@ -633,7 +634,7 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
             print(f"    🛑  Стоп-фраза в ответе ({violation!r}), возвращаю SKIP — отправит человек")
             metrics.log_event(
                 kind="skip",
-                model=OPENROUTER_MODEL,
+                model=ANTHROPIC_MODEL,
                 tokens_in=tin,
                 tokens_out=tout,
                 vacancy=vacancy_title,
@@ -652,7 +653,7 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
         skip = is_skip_response(text)
         metrics.log_event(
             kind="skip" if skip else "reply",
-            model=OPENROUTER_MODEL,
+            model=ANTHROPIC_MODEL,
             tokens_in=tin,
             tokens_out=tout,
             vacancy=vacancy_title,
@@ -668,7 +669,7 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
         print(f"  ⚠️  Ошибка генерации ответа: {e}")
         metrics.log_event(
             kind="error",
-            model=OPENROUTER_MODEL,
+            model=ANTHROPIC_MODEL,
             vacancy=vacancy_title,
             chat_url=chat_url,
             payload={"error": str(e)[:500]},
@@ -1260,9 +1261,9 @@ def main():
     print("💬 HH.ru Авто-ответчик")
     print("=" * 50)
 
-    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
-        print("\n❌ Ошибка, укажи OPENROUTER_API_KEY в .env или auto_apply_template.py")
-        print("   Получи на https://openrouter.ai/keys")
+    if ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY":
+        print("\n❌ Ошибка, укажи ANTHROPIC_API_KEY в env / .env")
+        print("   Получи на https://console.anthropic.com/settings/keys")
         return
     if not os.path.exists(SESSION_FILE):
         print("\n❌ Сессия не найдена, сначала запусти python3 hh_login.py")
