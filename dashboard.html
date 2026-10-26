@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Поиск работы</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<!-- шрифт не блокирует отрисовку: без сети страница сразу откроется системным -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'" />
+<style>
+:root {
+  --bg: #edf0f3; --surface: #ffffff; --surface-2: #f5f7f9; --line: #dbe1e7;
+  --ink: #1c2632; --muted: #5d6978; --faint: #8a95a3;
+  --action: #145c63; --action-ink: #ffffff; --action-soft: #e3eff0;
+  --attention: #a8661a; --attention-soft: #fbf0e1;
+  --good: #2e7a4e; --good-soft: #e3f2e9;
+  --bad: #a93838; --bad-soft: #f8e5e5;
+  --robot: #5b4a9e; --robot-soft: #ece8f7;
+  --radius-lg: 14px; --radius: 9px; --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(28, 38, 50, .06), 0 4px 16px rgba(28, 38, 50, .05);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151a20; --surface: #1d242c; --surface-2: #232b34; --line: #2f3944;
+    --ink: #e7ecf1; --muted: #a2adba; --faint: #76828f;
+    --action: #4fb3b8; --action-ink: #0d1d1f; --action-soft: #1d3436;
+    --attention: #e0a357; --attention-soft: #3a2d1c;
+    --good: #6cc392; --good-soft: #1c3226;
+    --bad: #e57d7d; --bad-soft: #3b2222;
+    --robot: #a99bea; --robot-soft: #2a2640;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 "Golos Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--action); }
+button, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--action); outline-offset: 2px; border-radius: 4px; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- шапка ---------- */
+.top {
+  max-width: 1320px; margin: 0 auto; padding: 28px 24px 8px;
+  display: grid; gap: 18px;
+}
+.top h1 { margin: 0; font-size: 28px; line-height: 1.15; font-weight: 700; letter-spacing: -.01em; }
+.today { display: grid; gap: 10px; max-width: 760px; }
+.today-line { margin: 0; font-size: 18px; color: var(--muted); }
+.today-line strong { color: var(--ink); font-weight: 600; }
+.meter { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.meter > i { display: block; height: 100%; width: 0; background: var(--action); border-radius: 99px; transition: width .4s ease; }
+.meter.full > i { background: var(--attention); }
+
+/* ---------- раскладка ---------- */
+.layout {
+  max-width: 1320px; margin: 0 auto; padding: 18px 24px 48px;
+  display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr) 340px; align-items: start;
+}
+.layout > .wide { grid-column: 1 / -1; }
+@media (max-width: 1080px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 18px 20px 0; flex-wrap: wrap; }
+.panel-head h2 { margin: 0; font-size: 19px; font-weight: 600; }
+.panel-head p { margin: 0; font-size: 13px; color: var(--muted); }
+.side { display: grid; gap: 22px; }
+
+/* ---------- «ждёт вас» ---------- */
+.inbox-tabs { display: flex; gap: 6px; padding: 14px 20px 0; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.inbox-tab {
+  border: 0; background: none; cursor: pointer; padding: 8px 4px 12px; margin-right: 14px;
+  color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.inbox-tab:hover { color: var(--ink); }
+.inbox-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--action); }
+.badge { min-width: 22px; padding: 0 7px; border-radius: 99px; font-size: 12px; line-height: 20px; text-align: center; background: var(--surface-2); color: var(--muted); }
+.badge.hot { background: var(--attention); color: #fff; }
+.inbox-list { list-style: none; margin: 0; padding: 6px 0 10px; }
+.item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 18px; align-items: center;
+  padding: 14px 20px; border-top: 1px solid var(--line); cursor: pointer;
+}
+.item:first-child { border-top: 0; }
+.item:hover { background: var(--surface-2); }
+.item.viewed { opacity: .6; }
+.item-title { font-weight: 600; overflow-wrap: anywhere; }
+.item-title a { color: inherit; text-decoration: none; }
+.item-title a:hover { text-decoration: underline; }
+.item-sub { color: var(--muted); font-size: 13px; }
+.item-text { grid-column: 1 / -1; color: var(--muted); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.item-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 640px) {
+  .inbox-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .inbox-tab { white-space: nowrap; }
+}
+@media (max-width: 640px) { .item { grid-template-columns: minmax(0, 1fr); } .item-actions { justify-content: flex-start; } }
+.empty { padding: 34px 20px 38px; color: var(--muted); }
+.empty strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 4px; }
+.chip { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 99px; font-size: 12px; background: var(--attention-soft); color: var(--attention); margin: 2px 4px 2px 0; }
+.chip.good { background: var(--good-soft); color: var(--good); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.robot { background: var(--robot-soft); color: var(--robot); }
+.chip.plain { background: var(--surface-2); color: var(--muted); }
+
+/* ---------- кнопки ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.btn:hover { border-color: var(--faint); }
+.btn.primary { background: var(--action); border-color: var(--action); color: var(--action-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.quiet { border-color: transparent; background: none; color: var(--muted); }
+.btn.quiet:hover { color: var(--ink); background: var(--surface-2); }
+.btn.danger { color: var(--bad); }
+.btn.small { padding: 4px 10px; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+/* ---------- боты ---------- */
+.bots { list-style: none; margin: 0; padding: 8px 0; }
+.bot { padding: 14px 20px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+.bot:first-child { border-top: 0; }
+.bot-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bot-name { font-weight: 600; display: flex; align-items: center; gap: 9px; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.status-dot.on { background: var(--good); box-shadow: 0 0 0 4px var(--good-soft); }
+.bot-meta { font-size: 13px; color: var(--muted); }
+.bot-meta .late { color: var(--attention); }
+.bot .act-restart { justify-self: start; padding-left: 0; }
+.bot .act-restart[hidden] { display: none; }
+
+/* ---------- цифры ---------- */
+.figures { margin: 0; padding: 10px 20px 18px; display: grid; gap: 12px; }
+.figure { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.figure dt { color: var(--muted); font-size: 14px; }
+.figure dd { margin: 0; font-weight: 600; text-align: right; }
+.figure dd small { display: block; color: var(--faint); font-weight: 400; font-size: 12px; }
+
+/* ---------- история ---------- */
+.filters { display: flex; gap: 6px; flex-wrap: wrap; padding: 14px 20px 4px; align-items: center; }
+.filter {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 99px; cursor: pointer;
+  padding: 4px 12px; font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center;
+}
+.filter:hover { color: var(--ink); }
+.filter[aria-pressed="true"] { background: var(--action); border-color: var(--action); color: var(--action-ink); }
+.filter .n { opacity: .75; font-variant-numeric: tabular-nums; }
+.toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.table-wrap { overflow-x: auto; padding: 6px 0 0; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th:first-child, td:first-child { padding-left: 20px; }
+th:last-child, td:last-child { padding-right: 20px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover td { background: var(--surface-2); }
+td.when { white-space: nowrap; color: var(--muted); }
+td.text { color: var(--muted); max-width: 460px; }
+td.text span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+td a { color: var(--ink); text-decoration: none; font-weight: 500; }
+td a:hover { text-decoration: underline; }
+tr.group td { background: var(--action-soft); }
+tr.child td:first-child { padding-left: 36px; }
+.pager { display: flex; align-items: center; gap: 8px; padding: 12px 20px 16px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.pager select { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); padding: 3px 6px; }
+.pager .info { margin: 0 6px; font-variant-numeric: tabular-nums; }
+
+/* ---------- свёрнутые блоки ---------- */
+details.fold { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+details.fold > summary { cursor: pointer; padding: 16px 20px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::after { content: "Показать"; color: var(--action); font-weight: 500; font-size: 14px; }
+details.fold[open] > summary::after { content: "Скрыть"; }
+.fold-body { padding: 0 20px 20px; }
+.settings { display: grid; gap: 10px 28px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 0; }
+.settings div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dashed var(--line); padding: 6px 0; }
+.settings dt { color: var(--muted); }
+.settings dd { margin: 0; font-weight: 600; text-align: right; }
+.activity { margin-top: 18px; }
+.log-tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+pre.log {
+  margin: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12.5px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace;
+}
+
+/* ---------- окна ---------- */
+.overlay { position: fixed; inset: 0; background: rgba(15, 22, 30, .45); display: none; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; overflow-y: auto; }
+.overlay.show { display: flex; }
+.dialog { background: var(--surface); border-radius: var(--radius-lg); width: min(760px, 100%); padding: 22px 24px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.dialog-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.dialog h3 { margin: 0; font-size: 19px; line-height: 1.3; overflow-wrap: anywhere; }
+.dialog .meta { color: var(--muted); font-size: 13px; margin: 8px 0 16px; display: grid; gap: 4px; }
+.dialog .meta a { overflow-wrap: anywhere; }
+.dialog .label { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+.textbox { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; max-height: 300px; overflow: auto; }
+.textbox.short { max-height: 200px; }
+textarea.editor { width: 100%; min-height: 180px; resize: vertical; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); line-height: 1.55; }
+textarea.editor:focus { outline: none; border-color: var(--action); }
+.counter { text-align: right; font-size: 12px; color: var(--faint); margin-top: 4px; }
+.counter.warn { color: var(--attention); } .counter.over { color: var(--bad); }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+.dialog-actions .status { margin-right: auto; font-size: 13px; color: var(--muted); }
+.dialog-actions .status.ok { color: var(--good); } .dialog-actions .status.err { color: var(--bad); }
+.thread { display: grid; gap: 10px; }
+.thread-item { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+.thread-item.current { border-color: var(--action); }
+.thread-item .head { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+.thread-item .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.questions { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+
+/* ---------- уведомления ---------- */
+.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 60; max-width: min(420px, calc(100vw - 32px)); }
+.toast { background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: var(--radius); font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+.toast.err { background: var(--bad); color: #fff; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Поиск работы</h1>
+  <div class="today">
+    <p class="today-line" id="today-line">Загружаю данные…</p>
+    <div class="meter" id="today-meter" role="progressbar" aria-label="Отклики за 24 часа от суточного лимита" aria-valuemin="0"><i></i></div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ===== Ждёт вас ===== -->
+  <section class="panel" aria-labelledby="inbox-title">
+    <div class="panel-head">
+      <h2 id="inbox-title">Ждёт вас</h2>
+      <p>Здесь бот остановился и оставил решение вам</p>
+    </div>
+    <div class="inbox-tabs" role="tablist">
+      <button class="inbox-tab" role="tab" data-tab="positive" aria-selected="true">Приглашения <span class="badge" id="n-positive">0</span></button>
+      <button class="inbox-tab" role="tab" data-tab="robotq" aria-selected="false">Анкеты роботов <span class="badge" id="n-robotq">0</span></button>
+      <button class="inbox-tab" role="tab" data-tab="pending" aria-selected="false">Ручная очередь <span class="badge" id="n-pending">0</span></button>
+      <button class="inbox-tab" role="tab" data-tab="rejections" aria-selected="false">Отказы <span class="badge" id="n-rejections">0</span></button>
+    </div>
+    <ul class="inbox-list" id="inbox-list" role="tabpanel"></ul>
+  </section>
+
+  <!-- ===== боковая колонка ===== -->
+  <aside class="side">
+    <section class="panel" aria-labelledby="bots-title">
+      <div class="panel-head"><h2 id="bots-title">Боты</h2></div>
+      <ul class="bots">
+        <li class="bot" data-name="apply">
+          <div class="bot-head">
+            <span class="bot-name"><span class="status-dot"></span>Отклики</span>
+            <button class="btn small act-toggle">Запустить</button>
+          </div>
+          <div class="bot-meta" data-run="apply_watch">—</div>
+          <button class="btn small quiet act-restart">Перезапустить</button>
+        </li>
+        <li class="bot" data-name="reply">
+          <div class="bot-head">
+            <span class="bot-name"><span class="status-dot"></span>Ответы в чатах</span>
+            <button class="btn small act-toggle">Запустить</button>
+          </div>
+          <div class="bot-meta" data-run="watch">—</div>
+          <button class="btn small quiet act-restart">Перезапустить</button>
+        </li>
+        <li class="bot" data-name="boost">
+          <div class="bot-head">
+            <span class="bot-name"><span class="status-dot"></span>Подъём резюме</span>
+            <button class="btn small act-toggle">Запустить</button>
+          </div>
+          <div class="bot-meta" data-run="boost_watch">—</div>
+          <button class="btn small quiet act-restart">Перезапустить</button>
+        </li>
+      </ul>
+    </section>
+
+    <section class="panel" aria-labelledby="figures-title">
+      <div class="panel-head"><h2 id="figures-title">Итоги</h2></div>
+      <dl class="figures">
+        <div class="figure"><dt>Откликов за 7 дней</dt><dd class="num" id="f-week">—</dd></div>
+        <div class="figure"><dt>Ответов в чатах за 7 дней</dt><dd class="num" id="f-replies">—</dd></div>
+        <div class="figure"><dt>Конверсия ответов</dt><dd class="num" id="f-conv">—</dd></div>
+        <div class="figure"><dt>Расходы на модель сегодня</dt><dd class="num" id="f-cost-today">—</dd></div>
+        <div class="figure"><dt>Расходы за всё время</dt><dd class="num" id="f-cost-total">—</dd></div>
+        <div class="figure"><dt>Сэкономила пауза в чатах</dt><dd class="num" id="f-cooldown">—</dd></div>
+        <div class="figure"><dt>Ошибок за 24 часа</dt><dd class="num" id="f-errors">—</dd></div>
+      </dl>
+    </section>
+  </aside>
+
+  <!-- ===== история ===== -->
+  <section class="panel wide" aria-labelledby="history-title">
+    <div class="panel-head">
+      <h2 id="history-title">История действий</h2>
+      <p>Нажмите на строку, чтобы прочитать письмо или ответ целиком</p>
+    </div>
+    <div class="filters" id="filters">
+      <button class="filter" data-kind="apply,reply,reply_unsent,positive_signal,positive_signal_handled,rejection,pending_manual,manual_applied,manual_dismissed,robot_questionnaire,robot_questionnaire_handled,robot_questionnaire_replied,robot_questionnaire_dismissed,error" aria-pressed="true" title="Без пропусков и служебных записей">Главное <span class="n" id="c-main"></span></button>
+      <button class="filter" data-kind="apply" aria-pressed="false">Отклики <span class="n" id="c-apply"></span></button>
+      <button class="filter" data-kind="reply" aria-pressed="false">Ответы в чатах <span class="n" id="c-reply"></span></button>
+      <button class="filter" data-kind="positive_signal,positive_signal_handled" aria-pressed="false">Приглашения <span class="n" id="c-positive"></span></button>
+      <button class="filter" data-kind="rejection" aria-pressed="false">Отказы <span class="n" id="c-rejection"></span></button>
+      <button class="filter" data-kind="pending_manual,manual_applied,manual_dismissed" aria-pressed="false">Ручная очередь <span class="n" id="c-pending"></span></button>
+      <button class="filter" data-kind="skip" aria-pressed="false">Пропуски <span class="n" id="c-skip"></span></button>
+      <button class="filter" data-kind="error" aria-pressed="false">Ошибки <span class="n" id="c-error"></span></button>
+      <button class="filter" data-kind="" aria-pressed="false">Всё подряд <span class="n" id="c-all"></span></button>
+      <label class="toggle"><input type="checkbox" id="group-by-chat"> Сгруппировать по чатам</label>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Когда</th><th>Что произошло</th><th>Вакансия</th><th>Компания</th><th>Подробности</th><th>Стоимость</th></tr></thead>
+        <tbody id="events"><tr><td colspan="6" class="muted">Загружаю…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <label>Строк на странице
+        <select id="page-size"><option selected>25</option><option>50</option><option>100</option></select>
+      </label>
+      <button class="btn small" id="page-prev">Назад</button>
+      <span class="info" id="page-info">—</span>
+      <button class="btn small" id="page-next">Дальше</button>
+    </div>
+  </section>
+
+  <details class="fold wide" id="fold-settings">
+    <summary>Настройки и активность</summary>
+    <div class="fold-body">
+      <dl class="settings">
+        <div><dt>Обход вакансий</dt><dd id="s-apply-interval">—</dd></div>
+        <div><dt>Проверка чатов</dt><dd id="s-reply-interval">—</dd></div>
+        <div><dt>Подъём резюме</dt><dd id="s-boost-interval">—</dd></div>
+        <div><dt>Пауза между откликами</dt><dd id="s-delay">—</dd></div>
+        <div><dt>Рабочие часы откликов</dt><dd id="s-hours">—</dd></div>
+        <div><dt>Лимит откликов в сутки</dt><dd id="s-limit">—</dd></div>
+        <div><dt>Чатов за один обход</dt><dd id="s-chats">—</dd></div>
+        <div><dt>Страниц поиска на запрос</dt><dd id="s-pages">—</dd></div>
+        <div><dt>Не откликаться повторно</dt><dd id="s-dedup">—</dd></div>
+      </dl>
+      <div class="table-wrap activity">
+        <table>
+          <thead><tr><th>За период</th><th>Отклики</th><th>Ответы</th><th>Подъёмы</th><th>Дубли</th><th>Пропуски</th><th>В ручную очередь</th><th>Приглашения</th><th>Отказы</th><th>Анкеты</th><th>Ошибки</th></tr></thead>
+          <tbody id="rates"></tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details class="fold wide" id="fold-logs">
+    <summary>Логи ботов</summary>
+    <div class="fold-body">
+      <div class="log-tabs">
+        <button class="filter" data-log="apply" aria-pressed="true">Отклики</button>
+        <button class="filter" data-log="reply" aria-pressed="false">Ответы в чатах</button>
+        <button class="filter" data-log="boost" aria-pressed="false">Подъём резюме</button>
+      </div>
+      <pre class="log" id="log">Лог пуст</pre>
+    </div>
+  </details>
+</main>
+
+<!-- ===== окна ===== -->
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+  <div class="dialog">
+    <div class="dialog-head">
+      <h3 id="dlg-title">—</h3>
+      <button class="btn quiet small" id="dlg-close" aria-label="Закрыть">Закрыть</button>
+    </div>
+    <div class="meta" id="dlg-meta"></div>
+    <div id="dlg-body"></div>
+    <div class="dialog-actions" id="dlg-actions"></div>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
+const esc = (s) => String(s ?? '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtNum = (n) => (n || 0).toLocaleString('ru-RU');
+const fmtCost = (c) => '$' + (c || 0).toFixed(c >= 1 ? 2 : 4);
+const now = () => Date.now() / 1000;
+
+function fmtDuration(sec){
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return `${sec} с`;
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m} мин`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  if (h < 24) return mm ? `${h} ч ${mm} мин` : `${h} ч`;
+  const d = Math.floor(h / 24), hh = h % 24;
+  return hh ? `${d} д ${hh} ч` : `${d} д`;
+}
+function fmtWhen(ts){
+  const ago = now() - ts;
+  if (ago < 60) return 'только что';
+  if (ago < 86400) return fmtDuration(ago) + ' назад';
+  return new Date(ts * 1000).toLocaleString('ru-RU', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
+}
+function fmtDate(ts){ return new Date(ts * 1000).toLocaleString('ru-RU'); }
+function plural(n, one, few, many){
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+async function getJSON(url){ const r = await fetch(url); if (!r.ok) throw new Error(`${url}: ${r.status}`); return r.json(); }
+async function post(url, body){
+  const opts = { method: 'POST' };
+  if (body !== undefined) { opts.headers = {'content-type': 'application/json'}; opts.body = JSON.stringify(body); }
+  const r = await fetch(url, opts);
+  let d = {}; try { d = await r.json(); } catch(_) {}
+  return { ok: r.ok && d.ok !== false, data: d };
+}
+function toast(text, isErr){
+  const el = document.createElement('div');
+  el.className = 'toast' + (isErr ? ' err' : '');
+  el.textContent = text;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), isErr ? 7000 : 3500);
+}
+function lastIncoming(tail){
+  const blocks = (tail || '').split('\n\n').map(s => s.trim()).filter(Boolean);
+  for (let i = blocks.length - 1; i >= 0; i--) if (!blocks[i].startsWith('[Я]')) return blocks[i];
+  return blocks[blocks.length - 1] || '';
+}
+const stripRole = (b) => String(b || '').replace(/^\[[^\]]*\]\s*/, '');
+
+const KIND = {
+  apply: ['Отклик отправлен', 'good'], reply: ['Ответ в чате', 'good'], reply_unsent: ['Ответ не отправлен', 'bad'],
+  skip: ['Пропуск', 'plain'], error: ['Ошибка', 'bad'], boost: ['Резюме поднято', 'good'],
+  pending_manual: ['В ручную очередь', ''], manual_applied: ['Откликнулись вручную', 'good'],
+  manual_dismissed: ['Не подошло', 'plain'], pending_viewed: ['Просмотрено', 'plain'],
+  positive_signal: ['Приглашение', 'good'], positive_signal_handled: ['Приглашение разобрано', 'plain'],
+  rejection: ['Отказ', 'bad'], robot_questionnaire: ['Анкета робота', 'robot'],
+  robot_questionnaire_handled: ['Анкета: ответили сами', 'plain'], robot_questionnaire_replied: ['Анкета: ответ отправлен', 'good'],
+  robot_questionnaire_dismissed: ['Анкета отклонена', 'plain'], run_start: ['Бот запущен', 'plain'], run_end: ['Бот остановлен', 'plain'],
+};
+const kindChip = (k) => { const [label, cls] = KIND[k] || [k, 'plain']; return `<span class="chip ${cls}">${esc(label)}</span>`; };
+const TRIGGER = {
+  'ml-only-title': 'ML без AI в названии', 'ai-only-title': 'AI без должности в названии',
+  'screening_questions': 'вопросы работодателя', 'unconfirmed_apply': 'HH не подтвердил отклик',
+};
+const SKIP = {
+  duplicate: 'уже откликались', wrong_role: 'чужая роль', not_target_role: 'не моя роль по названию',
+  on_site: 'не удалёнка', cooldown: 'повтор в чате, пауза', no_reply_needed: 'ответ не нужен',
+  banned_phrase: 'ответ заблокирован фильтром', boost_cooldown: 'подъём ещё недоступен',
+};
+const SIGNAL = { interview: 'Зовут на интервью', contact_request: 'Просят контакт', under_review: 'Резюме на рассмотрении' };
+
+/* ================= сводка и боты ================= */
+let status = null;
+
+async function refreshStatus(){
+  try { status = await getJSON('/api/status'); } catch(e){ return; }
+  const { workers = {}, rates = {}, limits = {}, summary = {} } = status;
+  const w = rates.windows || {}, d1 = w['24h'] || {}, d7 = w['7d'] || {};
+  const limit = limits.max_applies_per_day || 0, applied = d1.apply || 0;
+  const left = Math.max(0, limit - applied);
+
+  // строка «сегодня»
+  const parts = [`За сутки <strong>${fmtNum(applied)} ${plural(applied, 'отклик', 'отклика', 'откликов')}</strong> из ${fmtNum(limit)}`];
+  if (d1.manual_applied) parts.push(`ещё ${fmtNum(d1.manual_applied)} вручную`);
+  parts.push(left ? `осталось ${fmtNum(left)}` : '<strong>лимит исчерпан</strong>');
+  if (limits.work_hours) parts.push(`отклики идут ${esc(limits.work_hours)}`);
+  $('#today-line').innerHTML = parts.join(', ') + '.';
+  const meter = $('#today-meter');
+  meter.querySelector('i').style.width = limit ? Math.min(100, applied / limit * 100) + '%' : '0';
+  meter.classList.toggle('full', limit && applied >= limit);
+  meter.setAttribute('aria-valuemax', limit); meter.setAttribute('aria-valuenow', applied);
+
+  // боты
+  const runs = rates.last_runs || {};
+  const intervalOf = { apply_watch: limits.apply_interval_sec, watch: limits.reply_interval_sec, boost_watch: limits.boost_interval_sec };
+  $$('.bot').forEach(li => {
+    const wk = workers[li.dataset.name] || {};
+    $('.status-dot', li).classList.toggle('on', !!wk.running);
+    const toggle = $('.act-toggle', li);
+    toggle.textContent = wk.running ? 'Остановить' : 'Запустить';
+    toggle.classList.toggle('primary', !wk.running);
+    toggle.dataset.running = wk.running ? '1' : '';
+    $('.act-restart', li).hidden = !wk.running;
+    const meta = $('.bot-meta', li), key = meta.dataset.run, run = runs[key];
+    const interval = (run && run.interval_sec) || intervalOf[key];
+    if (!wk.running) {
+      meta.innerHTML = run && run.ts ? `Остановлен. Последний запуск ${esc(fmtWhen(run.ts))}` : 'Остановлен';
+    } else if (run && run.ts) {
+      const next = run.ts + interval - (rates.now || now());
+      meta.innerHTML = `Работает, проверяет раз в ${esc(fmtDuration(interval))}. ` + (next > 0
+        ? `Следующий обход через ${esc(fmtDuration(next))}`
+        : `<span class="late">Обход задерживается на ${esc(fmtDuration(-next))}</span>`);
+    } else {
+      meta.textContent = `Работает, проверяет раз в ${fmtDuration(interval)}`;
+    }
+  });
+
+  // итоги
+  $('#f-week').innerHTML = fmtNum(d7.apply) + (d7.manual_applied ? `<small>+${fmtNum(d7.manual_applied)} вручную</small>` : '');
+  $('#f-replies').textContent = fmtNum(d7.reply);
+  $('#f-cost-today').textContent = fmtCost(summary.today_cost_usd);
+  $('#f-cost-total').textContent = fmtCost(summary.cost_usd);
+  $('#f-errors').textContent = fmtNum(d1.error);
+
+  // настройки
+  $('#s-apply-interval').textContent = 'раз в ' + fmtDuration(limits.apply_interval_sec);
+  $('#s-reply-interval').textContent = 'раз в ' + fmtDuration(limits.reply_interval_sec);
+  $('#s-boost-interval').textContent = 'раз в ' + fmtDuration(limits.boost_interval_sec);
+  $('#s-delay').textContent = `${limits.delay_apply_min_sec}–${limits.delay_apply_max_sec} с, случайно`;
+  $('#s-hours').textContent = limits.work_hours || '—';
+  $('#s-limit').textContent = fmtNum(limit);
+  $('#s-chats').textContent = fmtNum(limits.max_chats_per_run);
+  $('#s-pages').textContent = fmtNum(limits.max_pages);
+  $('#s-dedup').textContent = `${limits.dedup_window_days} дней`;
+  $('#rates').innerHTML = [['1h', 'Час'], ['24h', 'Сутки'], ['7d', 'Неделя']].map(([k, label]) => {
+    const r = w[k] || {};
+    const cells = [r.apply, r.reply, r.boost, r.duplicate, (r.skip || 0) - (r.duplicate || 0), r.pending_manual,
+                   r.positive_signal, r.rejection, r.robot_questionnaire, r.error];
+    return `<tr><td>${label}</td>${cells.map(v => `<td class="num">${fmtNum(v)}</td>`).join('')}</tr>`;
+  }).join('');
+}
+
+async function refreshFigures(){
+  try {
+    const c = await getJSON('/api/conversion?days=60');
+    const total = c.total_chats_replied || 0;
+    $('#f-conv').innerHTML = total
+      ? `${(c.positive_pct || 0).toFixed(1)} %<small>${c.to_positive} из ${total} чатов за ${c.days} дней</small>`
+      : 'нет данных';
+  } catch(_) {}
+  try {
+    const s = await getJSON('/api/cooldown-savings?days=30');
+    $('#f-cooldown').innerHTML = `${fmtCost(s.saved_usd)}<small>${fmtNum(s.cooldown_skips)} лишних вызовов за ${s.days} дней</small>`;
+  } catch(_) {}
+}
+
+$$('.bot').forEach(li => {
+  const name = li.dataset.name;
+  const run = async (op, done) => {
+    const { ok, data } = await post(`/api/${name}/${op}`);
+    if (ok) toast(done); else toast(data.error || 'Не получилось, смотрите лог бота', true);
+    refreshStatus();
+  };
+  const toggle = $('.act-toggle', li);
+  toggle.addEventListener('click', () => toggle.dataset.running
+    ? run('stop', 'Бот остановлен') : run('start', 'Бот запущен'));
+  $('.act-restart', li).addEventListener('click', () => run('restart', 'Бот перезапущен'));
+});
+
+/* ================= ждёт вас ================= */
+let inboxTab = 'positive', inboxChosen = false;
+const inbox = { positive: [], robotq: [], pending: [], rejections: [] };
+const viewedKey = (id) => 'pending_viewed_' + id;
+const isViewed = (id) => { try { return localStorage.getItem(viewedKey(id)) === '1'; } catch(_) { return false; } };
+
+async function refreshInbox(){
+  const load = async (key, url, field) => { try { inbox[key] = (await getJSON(url))[field] || []; } catch(_) {} };
+  await Promise.all([
+    load('positive', '/api/positive', 'positive'),
+    load('robotq', '/api/robot-questionnaires', 'questionnaires'),
+    load('pending', '/api/pending', 'pending'),
+    load('rejections', '/api/rejections', 'rejections'),
+  ]);
+  for (const k of Object.keys(inbox)) {
+    const b = $('#n-' + k);
+    b.textContent = inbox[k].length;
+    b.classList.toggle('hot', k !== 'rejections' && inbox[k].length > 0);
+  }
+  // при первой загрузке открываем первую вкладку, где что-то есть
+  if (!inboxChosen) {
+    inboxChosen = true;
+    const first = ['positive', 'robotq', 'pending'].find(k => inbox[k].length);
+    if (first) selectTab(first);
+  }
+  renderInbox();
+}
+
+function link(url, text){
+  return url ? `<a href="${esc(url)}" target="_blank" rel="noopener" data-stop>${esc(text)}</a>` : esc(text);
+}
+
+const EMPTY = {
+  positive: ['Новых приглашений нет', 'Когда работодатель позовёт на интервью или попросит контакт, письмо появится здесь, и придёт уведомление в Telegram.'],
+  robotq: ['Анкет нет', 'Если чат-бот работодателя пришлёт серию вопросов, бот не станет отвечать сам и оставит их здесь.'],
+  pending: ['Очередь пуста', 'Сюда попадают вакансии, где нужно своё письмо, тестовое или ответы на вопросы.'],
+  rejections: ['Отказов нет', 'Отказы работодателей собираются здесь, отвечать на них не нужно.'],
+};
+
+function renderInbox(){
+  const list = $('#inbox-list'), items = inbox[inboxTab] || [];
+  if (!items.length) {
+    const [title, text] = EMPTY[inboxTab];
+    list.innerHTML = `<li class="empty"><strong>${title}</strong>${text}</li>`;
+    return;
+  }
+  list.innerHTML = items.map(it => {
+    const p = it.payload || {};
+    if (inboxTab === 'positive') {
+      const sig = it.signal_type || p.signal_type;
+      return `<li class="item" data-id="${it.id}">
+        <div><div class="item-title">${link(it.chat_url, it.vacancy || 'Чат')}</div>
+          <div class="item-sub"><span class="chip good">${esc(SIGNAL[sig] || 'Приглашение')}</span>${esc(fmtWhen(it.ts))}</div></div>
+        <div class="item-actions">
+          ${it.chat_url ? `<a class="btn small primary" href="${esc(it.chat_url)}" target="_blank" rel="noopener" data-stop>Ответить в HH</a>` : ''}
+          <button class="btn small" data-act="positive-done" data-stop>Разобрано</button></div>
+        <div class="item-text">${esc(stripRole(lastIncoming(p.history_tail)))}</div>
+      </li>`;
+    }
+    if (inboxTab === 'robotq') {
+      const qs = Array.isArray(p.questions) ? p.questions : [];
+      const n = p.questions_count || qs.length;
+      return `<li class="item" data-id="${it.id}">
+        <div><div class="item-title">${link(it.chat_url, it.vacancy || 'Чат')}</div>
+          <div class="item-sub"><span class="chip robot">${n} ${plural(n, 'вопрос', 'вопроса', 'вопросов')}</span>${esc(fmtWhen(it.ts))}</div></div>
+        <div class="item-actions"><button class="btn small primary" data-act="open">Ответить</button>
+          <button class="btn small quiet" data-act="robotq-dismiss" data-stop>Не отвечать</button></div>
+        <div class="item-text">${esc(p.last_question || qs[qs.length - 1] || '')}</div>
+      </li>`;
+    }
+    if (inboxTab === 'pending') {
+      const trig = (p.triggers || []).map(t => `<span class="chip">${esc(TRIGGER[t] || t)}</span>`).join('');
+      const title = p.title || (it.vacancy || '').split(' · ')[0] || 'Вакансия';
+      const employer = p.employer || (it.vacancy || '').split(' · ')[1] || '';
+      return `<li class="item ${isViewed(it.id) ? 'viewed' : ''}" data-id="${it.id}">
+        <div><div class="item-title">${link(p.vacancy_url || it.chat_url, title)}</div>
+          <div class="item-sub">${employer ? esc(employer) + ', ' : ''}${esc(fmtWhen(it.ts))}</div></div>
+        <div class="item-actions"><button class="btn small primary" data-act="open">Написать отклик</button>
+          <button class="btn small" data-act="pending-resolve" data-stop title="Уже откликнулись сами на HH">Уже откликнулся</button>
+          <button class="btn small quiet" data-act="pending-dismiss" data-stop>Не подходит</button></div>
+        <div class="item-text">${trig}${esc(descText(p.description_preview).slice(0, 260)) || '<span class="muted">В очередь по названию вакансии, описание не открывали</span>'}</div>
+      </li>`;
+    }
+    return `<li class="item" data-id="${it.id}">
+      <div><div class="item-title">${link(it.chat_url, it.vacancy || 'Чат')}</div>
+        <div class="item-sub">${esc(fmtWhen(it.ts))}</div></div>
+      <div class="item-actions"></div>
+      <div class="item-text">${esc(stripRole(lastIncoming(p.history_tail)))}</div>
+    </li>`;
+  }).join('');
+}
+
+function selectTab(name){
+  inboxTab = name;
+  $$('.inbox-tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+  $(`.inbox-tab[data-tab="${name}"]`).scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+$$('.inbox-tab').forEach(tab => tab.addEventListener('click', () => {
+  inboxChosen = true; selectTab(tab.dataset.tab); renderInbox();
+}));
+
+$('#inbox-list').addEventListener('click', async (ev) => {
+  const li = ev.target.closest('.item'); if (!li) return;
+  const it = (inbox[inboxTab] || []).find(x => x.id === +li.dataset.id); if (!it) return;
+  const btn = ev.target.closest('[data-act]');
+  if (ev.target.closest('a')) return;               // ссылки открываются как есть
+  const act = btn ? btn.dataset.act : 'open';
+  const simple = {
+    'positive-done': [`/api/positive/${it.id}/resolve`, 'Отмечено как разобранное'],
+    'robotq-dismiss': [`/api/robot-questionnaires/${it.id}/dismiss`, 'Анкета убрана, отвечать не будем'],
+    'pending-resolve': [`/api/pending/${it.id}/resolve`, 'Отмечено: вы откликнулись сами'],
+    'pending-dismiss': [`/api/pending/${it.id}/dismiss`, 'Вакансия убрана из очереди'],
+  };
+  if (simple[act]) {
+    btn.disabled = true;
+    const { ok } = await post(simple[act][0]);
+    toast(ok ? simple[act][1] : 'Не получилось обновить, попробуйте ещё раз', !ok);
+    return refreshInbox();
+  }
+  if (inboxTab === 'pending') openPending(it);
+  else if (inboxTab === 'robotq') openRobotQ(it);
+  else openChat(it);
+});
+
+/* ================= окна ================= */
+const overlay = $('#overlay');
+function openDialog(title, metaHtml, bodyHtml, actionsHtml){
+  $('#dlg-title').textContent = title;
+  $('#dlg-meta').innerHTML = metaHtml || '';
+  $('#dlg-body').innerHTML = bodyHtml || '';
+  $('#dlg-actions').innerHTML = actionsHtml || '';
+  overlay.classList.add('show');
+  $('#dlg-close').focus();
+}
+function closeDialog(){ overlay.classList.remove('show'); }
+$('#dlg-close').addEventListener('click', closeDialog);
+overlay.addEventListener('click', (ev) => { if (ev.target === overlay) closeDialog(); });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && overlay.classList.contains('show')) closeDialog(); });
+const metaLine = (label, html) => `<div>${label}: ${html}</div>`;
+const urlLine = (url, label = 'Ссылка') => url ? metaLine(label, `<a href="${esc(url)}" target="_blank" rel="noopener">${url.includes('/chat/') ? 'открыть чат на HH' : 'открыть вакансию на HH'}</a>`) : '';
+// служебная пометка бота «описание не загружали — отсев по title»
+const descText = (d) => /^\(описание не загружали/.test(d || '') ? '' : (d || '');
+
+function openChat(it){
+  const p = it.payload || {};
+  const sig = it.signal_type || p.signal_type;
+  openDialog(it.vacancy || 'Чат',
+    (sig ? metaLine('Что случилось', esc(SIGNAL[sig] || 'Приглашение') + (p.trigger ? ` — по фразе «${esc(p.trigger)}»` : '')) : '') +
+    metaLine('Когда', esc(fmtDate(it.ts))) + urlLine(it.chat_url, 'Чат'),
+    `<div class="label">Переписка</div><div class="textbox">${esc(p.history_tail || 'История не сохранилась')}</div>`,
+    it.chat_url ? `<a class="btn primary" href="${esc(it.chat_url)}" target="_blank" rel="noopener">Открыть чат в HH</a>` : '');
+}
+
+function openRobotQ(it){
+  const p = it.payload || {};
+  const qs = Array.isArray(p.questions) && p.questions.length ? p.questions : (p.last_question ? [p.last_question] : []);
+  openDialog(it.vacancy || 'Анкета робота',
+    metaLine('Когда', esc(fmtDate(it.ts))) + urlLine(it.chat_url, 'Чат'),
+    `<div class="label">Вопросы</div>` +
+    (qs.length ? `<ol class="questions">${qs.map(q => `<li>${esc(q)}</li>`).join('')}</ol>` : '<p class="muted">Вопросы не сохранились</p>') +
+    `<div class="label">Ваш ответ — бот отправит его в чат от вашего имени</div>
+     <textarea class="editor" id="rq-text" placeholder="Например: опыт с LLM — 3 года, RAG и агенты в проде."></textarea>`,
+    `<span class="status" id="rq-status"></span>
+     <button class="btn quiet" id="rq-handled">Ответил сам в HH</button>
+     <button class="btn primary" id="rq-send">Отправить ответ</button>`);
+  const status = $('#rq-status'), send = $('#rq-send');
+  $('#rq-text').focus();
+  $('#rq-handled').onclick = async () => {
+    const { ok } = await post(`/api/robot-questionnaires/${it.id}/resolve`);
+    if (ok) { toast('Анкета отмечена как отвеченная'); closeDialog(); refreshInbox(); }
+    else { status.textContent = 'Не получилось обновить'; status.className = 'status err'; }
+  };
+  send.onclick = async () => {
+    const text = $('#rq-text').value.trim();
+    if (!text) { status.textContent = 'Напишите ответ'; status.className = 'status err'; return; }
+    send.disabled = true; status.className = 'status'; status.textContent = 'Отправляю через HH, обычно 10–20 секунд…';
+    const { ok, data } = await post(`/api/robot-questionnaires/${it.id}/send`, { text });
+    if (ok) { toast('Ответ отправлен в чат'); closeDialog(); refreshInbox(); }
+    else { status.textContent = data.error || 'Не удалось отправить'; status.className = 'status err'; send.disabled = false; }
+  };
+}
+
+function openPending(it){
+  const p = it.payload || {};
+  const url = p.vacancy_url || it.chat_url || '';
+  const trig = (p.triggers || []).map(t => `<span class="chip">${esc(TRIGGER[t] || t)}</span>`).join('');
+  const added = (it.suggested_addendums || []).length ? ` В шаблон добавлено: ${esc(it.suggested_addendums.join(', '))}.` : '';
+  openDialog(p.title || it.vacancy || 'Вакансия',
+    (p.employer ? metaLine('Компания', esc(p.employer)) : '') +
+    metaLine('Почему в очереди', trig || '—') + (p.manual_note ? metaLine('Заметка', esc(p.manual_note)) : '') + urlLine(url),
+    `<div class="label">Описание вакансии</div><div class="textbox short">${esc(descText(p.description_preview) || 'Бот отправил вакансию в очередь по названию и описание не открывал. Прочитайте его на HH по ссылке выше.')}</div>
+     <div class="label">Сопроводительное письмо — отредактируйте под требования вакансии.${added}</div>
+     <textarea class="editor" id="pd-letter">${esc(it.suggested_letter || '')}</textarea>
+     <div class="counter" id="pd-counter"></div>`,
+    `<span class="status" id="pd-status"></span>
+     <button class="btn quiet" id="pd-later">Посмотрю позже</button>
+     <button class="btn" id="pd-dismiss">Не подходит</button>
+     <button class="btn primary" id="pd-apply">Отправить отклик</button>`);
+  const ta = $('#pd-letter'), counter = $('#pd-counter'), status = $('#pd-status'), apply = $('#pd-apply');
+  const count = () => {
+    const n = ta.value.length;
+    counter.textContent = `${n} из 2000 символов`;
+    counter.className = 'counter' + (n > 2000 ? ' over' : n > 1700 ? ' warn' : '');
+    apply.disabled = !ta.value.trim() || n > 2000;
+  };
+  ta.addEventListener('input', count); count(); ta.focus();
+  $('#pd-later').onclick = async () => {
+    try { localStorage.setItem(viewedKey(it.id), '1'); } catch(_) {}
+    await post(`/api/pending/${it.id}/view`);
+    closeDialog(); renderInbox();
+  };
+  $('#pd-dismiss').onclick = async () => {
+    const { ok } = await post(`/api/pending/${it.id}/dismiss`);
+    if (ok) { toast('Вакансия убрана из очереди'); closeDialog(); refreshInbox(); }
+    else { status.textContent = 'Не получилось обновить'; status.className = 'status err'; }
+  };
+  apply.onclick = async () => {
+    if (!confirm('Отправить отклик с этим письмом? Отменить его будет нельзя.')) return;
+    $$('#dlg-actions button').forEach(b => b.disabled = true);
+    status.className = 'status'; status.textContent = 'Открываю вакансию на HH, обычно 10–20 секунд…';
+    const { ok, data } = await post(`/api/pending/${it.id}/apply`, { letter: ta.value.trim() });
+    if (ok) { toast('Отклик отправлен' + (data.reason ? `: ${data.reason}` : '')); closeDialog(); refreshInbox(); refreshEvents(); }
+    else { status.textContent = data.error || 'Не удалось отправить'; status.className = 'status err'; $$('#dlg-actions button').forEach(b => b.disabled = false); count(); }
+  };
+}
+
+/* ================= история ================= */
+let events = [], total = 0, page = 0, pageSize = 25, kindFilter = 'apply,reply,reply_unsent,positive_signal,positive_signal_handled,rejection,pending_manual,manual_applied,manual_dismissed,robot_questionnaire,robot_questionnaire_handled,robot_questionnaire_replied,robot_questionnaire_dismissed,error', grouped = false;
+const openGroups = new Set();
+try { grouped = localStorage.getItem('hh-group-by-chat') === '1'; } catch(_) {}
+$('#group-by-chat').checked = grouped;
+
+function detailsOf(e){
+  const p = e.payload || {};
+  if (e.kind === 'skip') return SKIP[p.reason] || p.reason || (p.reply === 'SKIP' ? 'модель решила не отвечать' : '');
+  if (e.kind === 'apply') return p.letter || '';
+  if (e.kind === 'reply' || e.kind === 'reply_unsent') return p.reply || '';
+  if (e.kind === 'error') return p.error || '';
+  if (e.kind === 'pending_manual') return (p.triggers || []).map(t => TRIGGER[t] || t).join(', ');
+  if (e.kind === 'positive_signal') return SIGNAL[p.signal_type] || '';
+  if (e.kind === 'rejection') return stripRole(lastIncoming(p.history_tail));
+  if (e.kind === 'robot_questionnaire') return p.last_question || '';
+  if (e.kind === 'boost') return p.resume_title || '';
+  return '';
+}
+function titleOf(e){
+  const p = e.payload || {};
+  return { title: p.title || (e.vacancy || '').split(' · ')[0] || '', employer: p.employer || (e.vacancy || '').split(' · ')[1] || '',
+           url: p.vacancy_url || e.chat_url || '' };
+}
+function row(e, cls = ''){
+  const t = titleOf(e);
+  return `<tr class="${cls}" data-id="${e.id}">
+    <td class="when">${esc(fmtWhen(e.ts))}</td>
+    <td>${kindChip(e.kind)}</td>
+    <td>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener" data-stop>${esc(t.title || 'ссылка')}</a>` : esc(t.title)}</td>
+    <td class="muted">${esc(t.employer)}</td>
+    <td class="text"><span>${esc(detailsOf(e).slice(0, 300))}</span></td>
+    <td class="num muted">${e.cost_usd ? fmtCost(e.cost_usd) : ''}</td>
+  </tr>`;
+}
+function renderEvents(){
+  const tb = $('#events');
+  if (!events.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">В этом фильтре пока ничего нет</td></tr>'; return; }
+  if (!grouped) { tb.innerHTML = events.map(e => row(e)).join(''); return; }
+  const groups = new Map(), out = [];
+  for (const e of events) {
+    const key = (e.kind === 'reply' || e.kind === 'skip' || e.kind === 'reply_unsent') && (e.chat_url || '').includes('/chat/') ? e.chat_url : null;
+    if (!key) { out.push({ e }); continue; }
+    if (!groups.has(key)) { groups.set(key, []); out.push({ key }); }
+    groups.get(key).push(e);
+  }
+  tb.innerHTML = out.map(x => {
+    if (x.e) return row(x.e);
+    const items = groups.get(x.key), head = items[0], open = openGroups.has(x.key);
+    const replies = items.filter(i => i.kind === 'reply').length;
+    const cost = items.reduce((s, i) => s + (i.cost_usd || 0), 0);
+    return `<tr class="group" data-group="${esc(x.key)}">
+      <td class="when">${esc(fmtWhen(head.ts))}</td>
+      <td><span class="chip plain">${open ? 'Свернуть' : 'Развернуть'}: ${items.length}</span></td>
+      <td><a href="${esc(x.key)}" target="_blank" rel="noopener" data-stop>${esc(head.vacancy || 'Чат')}</a></td>
+      <td class="muted">${replies} ${plural(replies, 'ответ', 'ответа', 'ответов')}</td>
+      <td class="text"><span>${esc(detailsOf(items.find(i => i.kind === 'reply') || head).slice(0, 300))}</span></td>
+      <td class="num muted">${cost ? fmtCost(cost) : ''}</td></tr>` + (open ? items.map(e => row(e, 'child')).join('') : '');
+  }).join('');
+}
+async function refreshEvents(){
+  const params = new URLSearchParams({ limit: pageSize, offset: page * pageSize });
+  if (kindFilter) params.set('kind', kindFilter);
+  try {
+    const d = await getJSON('/api/events?' + params);
+    events = d.events || []; total = d.total || 0;
+  } catch(_) { return; }
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (page >= pages) { page = pages - 1; return refreshEvents(); }
+  renderEvents();
+  $('#page-info').textContent = `Страница ${page + 1} из ${pages}, всего ${fmtNum(total)}`;
+  $('#page-prev').disabled = page <= 0;
+  $('#page-next').disabled = page >= pages - 1;
+}
+async function refreshCounts(){
+  // total из /api/events с limit=1 — без выгрузки самих событий
+  await Promise.all($$('#filters .filter').map(async b => {
+    const params = new URLSearchParams({ limit: 1 });
+    if (b.dataset.kind) params.set('kind', b.dataset.kind);
+    try { b.querySelector('.n').textContent = fmtNum((await getJSON('/api/events?' + params)).total); } catch(_) {}
+  }));
+}
+$('#filters').addEventListener('click', (ev) => {
+  const b = ev.target.closest('.filter'); if (!b) return;
+  $$('#filters .filter').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  kindFilter = b.dataset.kind; page = 0; refreshEvents();
+});
+$('#group-by-chat').addEventListener('change', (ev) => {
+  grouped = ev.target.checked;
+  try { localStorage.setItem('hh-group-by-chat', grouped ? '1' : '0'); } catch(_) {}
+  renderEvents();
+});
+$('#page-size').addEventListener('change', (ev) => { pageSize = +ev.target.value; page = 0; refreshEvents(); });
+$('#page-prev').addEventListener('click', () => { if (page > 0) { page--; refreshEvents(); } });
+$('#page-next').addEventListener('click', () => { page++; refreshEvents(); });
+$('#events').addEventListener('click', (ev) => {
+  if (ev.target.closest('[data-stop]')) return;
+  const g = ev.target.closest('tr.group');
+  if (g) { const k = g.dataset.group; openGroups.has(k) ? openGroups.delete(k) : openGroups.add(k); return renderEvents(); }
+  const tr = ev.target.closest('tr[data-id]'); if (!tr) return;
+  const e = events.find(x => x.id === +tr.dataset.id); if (e) openEvent(e);
+});
+
+async function openEvent(e){
+  const p = e.payload || {}, t = titleOf(e);
+  const text = p.reply || p.letter || p.error || p.blocked_text || detailsOf(e) || 'Текста нет';
+  openDialog(e.vacancy || KIND[e.kind]?.[0] || e.kind,
+    metaLine('Что произошло', kindChip(e.kind)) + metaLine('Когда', esc(fmtDate(e.ts))) +
+    (e.model ? metaLine('Модель', `${esc(e.model)}, ${fmtNum(e.tokens_in)} → ${fmtNum(e.tokens_out)} токенов, ${fmtCost(e.cost_usd)}`) : '') +
+    urlLine(t.url),
+    `<div class="textbox">${esc(text)}</div>`);
+  if (!['reply', 'skip', 'reply_unsent'].includes(e.kind) || !(e.chat_url || '').includes('/chat/')) return;
+  try {
+    const items = (await getJSON('/api/chat-history?chat_url=' + encodeURIComponent(e.chat_url))).history || [];
+    if (items.length <= 1) return;
+    $('#dlg-body').innerHTML = `<div class="label">Все ответы бота в этом чате: ${items.length}</div><div class="thread">` +
+      items.map(it => {
+        const pp = it.payload || {};
+        const body = it.kind === 'skip' ? `Пропуск: ${SKIP[pp.reason] || pp.reason || 'модель решила не отвечать'}` : (pp.reply || '');
+        return `<div class="thread-item ${it.id === e.id ? 'current' : ''}">
+          <div class="head">${kindChip(it.kind)}<span>${esc(fmtDate(it.ts))}</span>${it.cost_usd ? `<span>${fmtCost(it.cost_usd)}</span>` : ''}</div>
+          <div class="body">${esc(body)}</div></div>`;
+      }).join('') + '</div>';
+  } catch(_) {}
+}
+
+/* ================= логи ================= */
+let logName = 'apply';
+async function refreshLog(){
+  if (!$('#fold-logs').open) return;
+  try {
+    const el = $('#log'), t = await (await fetch(`/api/log/${logName}?lines=120`)).text();
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+    el.textContent = t || 'Лог пуст: бот ещё не запускался';
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch(_) {}
+}
+$$('[data-log]').forEach(b => b.addEventListener('click', () => {
+  logName = b.dataset.log;
+  $$('[data-log]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  refreshLog();
+}));
+$('#fold-logs').addEventListener('toggle', refreshLog);
+
+/* ================= обновление ================= */
+let tickN = 0;
+async function tick(){
+  if (document.hidden) return;
+  const slow = tickN++ % 6 === 0;                   // редкие данные — раз в ~30 с
+  await Promise.all([refreshStatus(), refreshInbox(), refreshLog(),
+    overlay.classList.contains('show') ? null : refreshEvents(),
+    slow ? refreshFigures() : null, slow ? refreshCounts() : null]);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>
