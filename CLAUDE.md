@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## О проекте
 
-hh-auto-apply — личный инструмент для поиска работы на HH.ru: поиск вакансий, LLM-генерация сопроводительных писем, ответы работодателям в чате, подъём резюме, веб-дашборд.
+hh-auto-apply — личный инструмент для поиска работы на HH.ru: поиск вакансий, отклики с шаблонным письмом, LLM-ответы работодателям в чате, подъём резюме, веб-дашборд.
 Используется только локально, никому не передаётся. Работает с реальным аккаунтом HH владельца.
 Ищем **только удалёнку**: офисные вакансии (`ON_SITE_TRIGGERS`) сразу skip при `HH_SKIP_ON_SITE=1` (дефолт).
 
@@ -24,7 +24,7 @@ hh-auto-apply — личный инструмент для поиска рабо
 - `REVIEW.md` — код-ревью от Qwen, все пункты закрыты (2026-10-26). `SYSTEM_PROMPT.md` — промпт для Claude Projects, к коду не относится.
 - Состояние процессов: PID и логи воркеров — `/tmp/hh_{auto_apply,auto_reply,resume_boost,dashboard}.{pid,log}`, lock-файлы — `~/.n8n-files/*.lock`. Каталог `logs/` — остатки ручных запусков.
 
-**LLM (с коммита `6011991`):** письма и ответы в чате идут через **OpenRouter** (OpenAI SDK, `OPENROUTER_API_KEY` из `.env`, модель `OPENROUTER_MODEL`, дефолт `google/gemma-4-31b-it:free`). `anthropic_client` создаётся, но не используется. README и SETUP_GUIDE описывают Claude-версию, отличия этой ветки — в шапке README.
+**LLM (с коммита `6011991`):** ответы в чате (**только `auto_reply.py`**) идут через **OpenRouter** (OpenAI SDK, `OPENROUTER_API_KEY` из `.env`, модель `OPENROUTER_MODEL`, дефолт `google/gemma-4-31b-it:free`). Отклики шлют шаблон `build_letter()`; `generate_cover_letter()` нигде не вызывается, `anthropic_client` не используется. Ключ нужен только воркеру `reply`. README и SETUP_GUIDE описывают Claude-версию, отличия этой ветки — в шапке README.
 
 **Ветки:** `main` — основная версия на Claude (Anthropic SDK, `claude-haiku-4-5-20251001`); `qwen-branch` (эта) — запасной вариант на OpenRouter. Общие исправления (браузер, антибан, boost, дашборд) делать в `main` и переносить сюда через `cherry-pick`.
 
