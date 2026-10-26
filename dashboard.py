@@ -95,20 +95,11 @@ def _start_worker(name: str) -> dict[str, Any]:
     cfg["log_file"].write_text("")
     log = open(cfg["log_file"], "a", buffering=1)
 
+    # .env уже подгружен load_dotenv() при импорте auto_apply_template
     env = os.environ.copy()
-    # Проверяем OPENROUTER_API_KEY (используется вместо Anthropic)
-    if not env.get("OPENROUTER_API_KEY"):
-        try:
-            for line in Path.home().joinpath(".bashrc").read_text().splitlines():
-                line = line.strip()
-                if line.startswith("export OPENROUTER_API_KEY="):
-                    env["OPENROUTER_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
-        except Exception:
-            pass
     if not env.get("OPENROUTER_API_KEY"):
         log.close()
-        return {"ok": False, "error": "OPENROUTER_API_KEY не найден ни в env, ни в ~/.bashrc"}
+        return {"ok": False, "error": "OPENROUTER_API_KEY не найден ни в env, ни в .env"}
     if not env.get("DISPLAY"):
         env["DISPLAY"] = ":1"
 
