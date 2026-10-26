@@ -381,6 +381,13 @@ def boost_all(page) -> dict[str, Any]:
     except PlaywrightTimeoutError:
         pass
 
+    guest = page.locator("header a:has-text('Войти'), header button:has-text('Войти'), [data-qa='login']").filter(visible=True).count()
+    if "login" in page.url.split("?")[0] or guest:
+        from auto_apply_template import SESSION_EXPIRED
+        print(f"  🛑 {SESSION_EXPIRED}")
+        metrics.log_event(kind="error", payload={"where": "resume_boost", "error": SESSION_EXPIRED})
+        return {"boosted": 0, "cooldown": 0, "errors": 1, "no_button": 0, "min_cooldown_sec": None}
+
     # Закрываем модальные окна сразу после загрузки страницы
     _dismiss_modals(page)
 
