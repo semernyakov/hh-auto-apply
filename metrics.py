@@ -211,14 +211,17 @@ def get_robot_questionnaires(limit: int = 200) -> list[dict[str, Any]]:
     return out
 
 
-def get_pending_manual() -> list[dict[str, Any]]:
-    """Возвращает все события вида 'pending_manual', которые ещё не обработаны."""
+def get_pending_manual(max_age_days: float | None = None) -> list[dict[str, Any]]:
+    """Необработанные события 'pending_manual'. max_age_days — только свежие
+    (старые остаются в БД и в истории, но не висят в очереди)."""
+    since = time.time() - max_age_days * 86400 if max_age_days else 0
     with _conn() as c:
         rows = c.execute(
             """SELECT id, ts, kind, vacancy, chat_url, payload_json
                FROM events
-               WHERE kind = 'pending_manual'
-               ORDER BY ts DESC"""
+               WHERE kind = 'pending_manual' AND ts >= ?
+               ORDER BY ts DESC""",
+            (since,),
         ).fetchall()
     out = []
     for r in rows:
