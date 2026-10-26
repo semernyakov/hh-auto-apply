@@ -9,7 +9,7 @@ PORT        := 8765
 start:
 	@if [ ! -x $(PYTHON) ]; then \
 		echo "Ошибка: $(PYTHON) не найден или не исполняемый"; \
-		echo "Создайте venv: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"; \
+		echo "Создайте venv: python3 -m venv .venv && .venv/bin/pip install playwright python-dotenv anthropic openai fastapi uvicorn"; \
 		exit 1; \
 	fi
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
