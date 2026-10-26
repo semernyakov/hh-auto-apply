@@ -316,6 +316,7 @@ WRONG_ROLE_TITLE_TRIGGERS = [
     "automation qa", "qa automation", "manual qa", "sdet", "aqa",
     "test engineer", "test automation", "qa", 
     "тестировщик", "инженер по тестированию",
+    "автоматизации тестирования", "автоматизатор тестирования", "тестированию",
     # Преподаватели / менторы (не наша роль)
     "преподаватель", "teacher", "lecturer", "instructor",
     # Frontend (не backend/python)
@@ -517,6 +518,24 @@ def foreign_lang_match(title: str) -> str:
     return f"lang:{m.group(0).lower()}" if m else ""
 
 
+# Нетехнические роли — пропуск даже при AI в названии (проверка до «AI + должность»):
+# «Head of Growth Marketing & Partnerships / AI Invest Startup» уходила в отклик.
+NON_TECH_TITLE_TRIGGERS = [
+    "marketing", "маркетинг", "маркетолог", "growth",
+    "partnership", "партнёрств", "партнерств", "revops",
+    "sales", "продаж", "business development", "рекрутер", "recruiter",
+]
+
+
+def non_tech_match(title: str) -> str:
+    """Нетехническая роль в названии — триггер или пустая строка."""
+    t = (title or "").lower()
+    for trig in NON_TECH_TITLE_TRIGGERS:
+        if trig in t:
+            return f"non-tech:{trig}"
+    return ""
+
+
 def title_route(title: str) -> tuple[str, str]:
     """Решение по названию вакансии до загрузки описания.
 
@@ -532,9 +551,10 @@ def title_route(title: str) -> tuple[str, str]:
       6) AI без должности — ручная очередь; иначе — пропуск.
     Раньше чужая роль проверялась после шагов 3–4, и Data Scientist / аналитики
     шли в ручную очередь: 0 откликов на 102 таких решения пользователя.
-    Перед всем — чужой основной язык (.NET, Java, Go, PHP…) без Python: пропуск.
+    Перед всем — чужой основной язык (.NET, Java, Go, PHP…) без Python и
+    нетехническая роль (маркетинг, продажи, партнёрства): пропуск.
     """
-    lang = foreign_lang_match(title)
+    lang = foreign_lang_match(title) or non_tech_match(title)
     if lang:
         return "skip", lang
     if is_ai_target_role(title):
