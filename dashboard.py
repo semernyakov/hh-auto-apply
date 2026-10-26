@@ -243,9 +243,13 @@ def _enrich_pending(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+# Вакансии старше этого срока в очереди не показываем: на HH они обычно уже закрыты
+PENDING_MAX_AGE_DAYS = float(os.getenv("HH_PENDING_MAX_AGE_DAYS", "14"))
+
+
 @app.get("/api/pending")
 def api_pending() -> JSONResponse:
-    return JSONResponse({"pending": _enrich_pending(metrics.get_pending_manual())})
+    return JSONResponse({"pending": _enrich_pending(metrics.get_pending_manual(PENDING_MAX_AGE_DAYS))})
 
 
 @app.get("/api/positive")

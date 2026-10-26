@@ -11,7 +11,9 @@ HH.ru Автооткликатор
 
 import fcntl
 import os
+import json
 import random
+import re
 import shutil
 import sys
 import time
@@ -214,10 +216,11 @@ MANUAL_TRIGGERS = [
     "покажите пример",
     "ваше портфолио", "ссылку на портфолио", "ссылка на портфолио",
     "приложите портфолио", "прикрепите портфолио", "пришлите портфолио",
-    # Тестовое / задание
-    "тестовое задание", "выполните тестовое", "выполнить тестовое",
-    "выполните задание", "решить задачу",
-    "тестовое испытание", "тестовый проект",
+    # Тестовое / задание — только просьба к соискателю, а не упоминание этапа
+    # отбора («этапы: интервью, тестовое задание» — 1 отклик на 12 решений)
+    "выполните тестовое", "выполнить тестовое", "пришлите тестовое", "сделайте тестовое",
+    "приложите тестовое", "прикрепите тестовое", "тестовое задание к отклику",
+    "тестовое задание при отклике", "выполните задание", "решить задачу",
     # Анкета / опрос
     "ответьте на вопросы", "заполните анкету", "пройдите опрос",
     # Просьба рассказать об опыте — кастомное письмо обязательно
@@ -231,7 +234,6 @@ MANUAL_TRIGGERS = [
     "при отклике важно", "при отклике укажите", "при отклике опишите",
     "при отклике расскажите", "при отклике приложите", "при отклике добавьте",
     "при отклике напишите", "при отклике отправьте",
-    "как откликнуться", "как откликнутся", "как отозваться",
     "в отклике важно", "в отклике укажите", "в отклике опишите",
     "в отклике расскажите", "в отклике напишите", "в отклике отправьте",
     # «в ответе / сопроводительном …» — кастомное письмо
@@ -250,8 +252,8 @@ MANUAL_TRIGGERS = [
     # Внимательное чтение
     "прочитайте до конца", "прочитайте вакансию до конца",
     "внимательно прочитайте", "внимательно прочтите",
-    # архитектурные решения / проекты с похожими задачами
-    "опыт архитектурных решений", "архитектурных решений",
+    # архитектурные решения / проекты с похожими задачами. «Архитектурных решений»
+    # без просьбы — пункт обязанностей тимлида (0 откликов на 20 решений), не триггер.
     "опишите архитектур", "расскажите про архитектур", "расскажите об архитектур",
     "приведите архитектур",
     "проекты с похожими задачами", "проектах с похожими задачами",
@@ -308,6 +310,7 @@ WRONG_ROLE_TITLE_TRIGGERS = [
     # Data Science / Analytics
     "data scientist", "data science", "дата-сайентист", "дата сайентист",
     "data analyst", "аналитик данных",
+    "data engineer", "data engineering", "дата-инженер", "дата инженер",
     # QA / Testing
     "qa engineer", "qa-engineer", "qa lead", "qa инженер", "quality assurance",
     "automation qa", "qa automation", "manual qa", "sdet", "aqa",
@@ -437,6 +440,100 @@ ML_TITLE_MARKERS = [
 def has_ml_marker(title: str) -> bool:
     t = " " + (title or "").lower() + " "
     return any(trig in t for trig in ML_TITLE_MARKERS)
+
+
+# ============== РАЗБОР ML-ВАКАНСИЙ ПО ОПИСАНИЮ ==============
+# «ML Engineer» в названии бывает и обучением моделей, и продуктом на готовых
+# LLM. Разделяем по описанию: что работодатель получает на выходе.
+#   AI-инженер полного цикла — работающая функция продукта вокруг модели;
+#   ML-инженер — обученная модель с метриками качества;
+#   Data Scientist — вывод/прогноз для бизнеса.
+# Шаблоны — регулярки: латиница с границами слова, русские — по началу слова.
+ML_SIGNALS: dict[str, tuple[str, ...]] = {
+    "ai": (
+        r"\bllm", r"\blarge language", r"\brag\b", r"\bretrieval", r"\blangchain", r"\blanggraph",
+        r"\bllamaindex", r"\bagent(?!ur|cy|ie)", r"\bагент(?!ств)", r"\bprompt", r"\bпромпт", r"\bvector", r"\bвекторн",
+        r"\bpgvector", r"\bqdrant", r"\bweaviate", r"\bmilvus", r"\bfaiss", r"\bopenai", r"\bclaude",
+        r"\bgpt", r"\banthropic", r"\bfastapi", r"\bdjango", r"\bflask", r"\bbackend", r"\bбэкенд",
+        r"\bapi\b", r"\bинтеграц", r"\bмикросервис", r"\bmicroservice", r"\bdocker", r"\bkubernetes",
+        r"\bk8s\b", r"\bci/cd", r"\bпродакшн", r"\bproduction", r"\bполного цикла", r"\bend-to-end",
+    ),
+    "ml": (
+        r"\bобучени[ея] модел", r"\bобучать модел", r"\bтренировк", r"\btraining\b", r"\bдатасет",
+        r"\bdataset", r"\bразметк", r"\bfeature engineering", r"\bpytorch", r"\btensorflow", r"\bkeras",
+        r"\bcomputer vision", r"\bкомпьютерн\w* зрени", r"\bopencv", r"\byolo", r"\bдетекци",
+        r"\bсегментаци", r"\bрекомендательн", r"\brecsys", r"\branking", r"\bранжирован", r"\bgpu",
+        r"\bcuda", r"\btriton", r"\bonnx", r"\btensorrt", r"\bmlflow", r"\bkubeflow", r"\bprecision",
+        r"\brecall\b", r"\bndcg", r"\bauc\b", r"\bметрик\w* качества",
+    ),
+    "ds": (
+        r"\bгипотез", r"\ba/b", r"\bab-тест", r"\bстатистик", r"\bsql\b", r"\bдашборд", r"\bdashboard",
+        r"\btableau", r"\bpower bi", r"\bбизнес-метрик", r"\bpandas", r"\bscikit", r"\bsklearn",
+        r"\bjupyter", r"\bпрогнозирован", r"\bотток", r"\bchurn", r"\bрегресси", r"\bэконометр",
+        r"\bисследовани[ея] данных", r"\bинсайт",
+    ),
+}
+_ML_RE = {k: [re.compile(p, re.IGNORECASE) for p in v] for k, v in ML_SIGNALS.items()}
+# Разбор включён по умолчанию; HH_ML_CLASSIFY=0 — старое поведение (ML-названия
+# сразу в ручную очередь без чтения описания). В --dry-run работает всегда.
+ML_CLASSIFY = os.getenv("HH_ML_CLASSIFY", "1").strip().lower() in ("1", "true", "yes")
+ML_REPORT_FILE = Path("/tmp/hh_ml_classify.jsonl")
+
+
+def classify_ml_vacancy(description: str) -> dict:
+    """Считает признаки трёх ролей в описании и выбирает действие:
+    'apply' (AI-инженер полного цикла), 'skip' (DS или чистое обучение моделей),
+    'pending' (неясно — решает человек)."""
+    text = description or ""
+    hits = {k: sorted({p.pattern for p in pats if p.search(text)}) for k, pats in _ML_RE.items()}
+    ai, ml, ds = (len(hits[k]) for k in ("ai", "ml", "ds"))
+    if ai >= 3 and ai > ml and ai > ds:
+        action, label = "apply", "AI-инженер полного цикла"
+    elif ds >= 3 and ds > ai and ds >= ml:
+        action, label = "skip", "Data Scientist"
+    elif ml >= 3 and ml > ai:
+        # обучение моделей, MLOps, рекомендательные системы — не наша роль (решение пользователя)
+        action, label = "skip", "ML-инженер: обучение моделей / MLOps"
+    else:
+        action, label = "pending", "неясно"
+    return {"action": action, "label": label, "counts": {"ai": ai, "ml": ml, "ds": ds}, "hits": hits}
+
+
+def title_route(title: str) -> tuple[str, str]:
+    """Решение по названию вакансии до загрузки описания.
+
+    Возвращает (действие, триггер): действие — 'apply' (дальше, к описанию),
+    'pending' (ручная очередь) или 'skip' (триггер = причина: чужая роль или
+    'not_target_role'). Порядок важен:
+      1) AI/LLM + должность/инфра — наша роль, перебивает чужую;
+      2) чужая роль — пропуск, кроме названий, где есть и ML/AI (не только MLOps):
+         «Senior Data Scientist (ML Engineering)» решает человек;
+      3) data/аналитика/researcher в названии — ручная очередь;
+      4) ML без AI — ручная очередь;
+      5) Python/автоматизация — наша роль;
+      6) AI без должности — ручная очередь; иначе — пропуск.
+    Раньше чужая роль проверялась после шагов 3–4, и Data Scientist / аналитики
+    шли в ручную очередь: 0 откликов на 102 таких решения пользователя.
+    """
+    if is_ai_target_role(title):
+        return "apply", ""
+    wrong = wrong_role_match(title)
+    if wrong:
+        tl = " " + (title or "").lower().replace("mlops", "") + " "
+        ml_not_ops = any(m in tl for m in ML_TITLE_MARKERS)
+        if ml_not_ops or has_ai_marker(title):
+            return "pending", f"mixed-role:{wrong}"
+        return "skip", wrong
+    manual = has_manual_title_trigger(title)
+    if manual:
+        return "pending", manual
+    if has_ml_marker(title):
+        return "pending", "ml-only-title"
+    if is_language_target_role(title):
+        return "apply", ""
+    if has_ai_marker(title):
+        return "pending", "ai-only-title"
+    return "skip", "not_target_role"
 
 
 # ============== КОД ==============
@@ -1042,117 +1139,70 @@ def main():
                                 stats['skipped'] += 1
                                 continue
 
-                        # Приоритет фильтров (строго в этом порядке):
-                        # 1) AI/LLM + позиция/инфра — таргет, перебивает wrong_role
-                        # 2) ML-маркер — ручная очередь, перебивает wrong_role
-                        # 3) Data/Database/Analytics/Researcher — ручная очередь
-                        # 4) wrong_role — скип
-                        # 5) Python/automation сами по себе — таргет
-                        # 6) AI-only (без позиции) — ручная очередь
-                        # 7) иначе — скип not_target_role
-                        if not is_ai_target_role(vacancy['title']):
-                            # Data/Database/Analytics/Researcher — в ручную очередь
-                            manual_trigger = has_manual_title_trigger(vacancy['title'])
-                            if manual_trigger:
-                                print(f"      🚩 {manual_trigger} в названии, в ручную очередь")
-                                if metrics_sink:
-                                    metrics_sink.log_event(
-                                        kind="pending_manual",
-                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                        chat_url=vacancy['url'],
-                                        payload={
-                                            "vacancy_url": vacancy['url'],
-                                            "source": vacancy.get("source", ""),
-                                            "title": vacancy['title'],
-                                            "employer": vacancy['employer'],
-                                            "triggers": [manual_trigger],
-                                            "description_preview": "(описание не загружали — отсев по title)",
-                                        },
-                                    )
-                                    _remember_in_index(vacancy)
-                                stats['skipped'] += 1
-                                continue
-
-                            if has_ml_marker(vacancy['title']):
-                                print("      🚩 ML без AI/LLM-контекста, в ручную очередь")
-                                if metrics_sink:
-                                    metrics_sink.log_event(
-                                        kind="pending_manual",
-                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                        chat_url=vacancy['url'],
-                                        payload={
-                                            "vacancy_url": vacancy['url'],
-                                            "source": vacancy.get("source", ""),
-                                            "title": vacancy['title'],
-                                            "employer": vacancy['employer'],
-                                            "triggers": ["ml-only-title"],
-                                            "description_preview": "(описание не загружали — отсев по title)",
-                                        },
-                                    )
-                                    _remember_in_index(vacancy)
-                                stats['skipped'] += 1
-                                continue
-
-                            wrong = wrong_role_match(vacancy['title'])
-                            if wrong:
-                                print(f"      ⏭️  Не моя роль ({wrong}), пропускаю")
-                                if metrics_sink:
-                                    metrics_sink.log_event(
-                                        kind="skip",
-                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                        chat_url=vacancy['url'],
-                                        payload={
-                                            "reason": "wrong_role",
-                                            "trigger": wrong,
-                                            "title": vacancy['title'],
-                                            "employer": vacancy['employer'],
-                                            "vacancy_url": vacancy['url'],
-                                            "source": vacancy.get("source", ""),
-                                        },
-                                    )
-                                stats['skipped'] += 1
-                                continue
-
-                            if is_language_target_role(vacancy['title']):
-                                pass  # Python/automation таргет — продолжаем обработку
-                            elif has_ai_marker(vacancy['title']):
-                                print("      🚩 AI/LLM без явной позиции, в ручную очередь")
-                                if metrics_sink:
-                                    metrics_sink.log_event(
-                                        kind="pending_manual",
-                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                        chat_url=vacancy['url'],
-                                        payload={
-                                            "vacancy_url": vacancy['url'],
-                                            "source": vacancy.get("source", ""),
-                                            "title": vacancy['title'],
-                                            "employer": vacancy['employer'],
-                                            "triggers": ["ai-only-title"],
-                                            "description_preview": "(описание не загружали — отсев по title)",
-                                        },
-                                    )
-                                    _remember_in_index(vacancy)
-                                stats['skipped'] += 1
-                                continue
+                        # Отсев по названию до загрузки описания — см. title_route().
+                        route, trig = title_route(vacancy['title'])
+                        preloaded_description = None
+                        if route == "pending" and trig == "ml-only-title" and (dry_run or ML_CLASSIFY):
+                            # ML в названии ничего не говорит о роли — смотрим описание
+                            time.sleep(random.uniform(3, 6))
+                            preloaded_description = get_vacancy_description(page, vacancy['url'])
+                            verdict = classify_ml_vacancy(preloaded_description)
+                            c = verdict["counts"]
+                            print(f"      🔎 ML-разбор: AI {c['ai']} · ML {c['ml']} · DS {c['ds']} → {verdict['label']}")
+                            try:
+                                with ML_REPORT_FILE.open("a", encoding="utf-8") as fh:
+                                    fh.write(json.dumps({"ts": time.time(), "title": vacancy['title'], "employer": vacancy['employer'],
+                                                         "url": vacancy['url'], "dry_run": dry_run, **verdict}, ensure_ascii=False) + "\n")
+                            except OSError:
+                                pass
+                            if verdict["action"] == "apply":
+                                route = "apply"
+                            elif verdict["action"] == "skip":
+                                route, trig = "skip", f"ml_classified:{verdict['label']}"
                             else:
-                                print("      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
-                                if metrics_sink:
-                                    metrics_sink.log_event(
-                                        kind="skip",
-                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                        chat_url=vacancy['url'],
-                                        payload={
-                                            "reason": "not_target_role",
-                                            "title": vacancy['title'],
-                                            "employer": vacancy['employer'],
-                                            "vacancy_url": vacancy['url'],
-                                            "source": vacancy.get("source", ""),
-                                        },
-                                    )
-                                stats['skipped'] += 1
-                                continue
+                                trig = "ml-unclear"
+                        if route == "pending":
+                            print(f"      🚩 {trig} в названии, в ручную очередь")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="pending_manual",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "triggers": [trig],
+                                        "description_preview": "(описание не загружали — отсев по title)",
+                                    },
+                                )
+                                _remember_in_index(vacancy)
+                            stats['skipped'] += 1
+                            continue
+                        if route == "skip":
+                            wrong = trig not in ("not_target_role",) and not trig.startswith("ml_classified:")
+                            print(f"      ⏭️  Не моя роль ({trig}), пропускаю" if wrong
+                                  else f"      ⏭️  {trig.split(':', 1)[1]} — не моя роль, пропускаю" if trig.startswith("ml_classified:")
+                                  else "      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="skip",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "reason": "wrong_role" if wrong else trig.split(":", 1)[0],
+                                        **({"trigger": trig} if wrong else {}),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                    },
+                                )
+                            stats['skipped'] += 1
+                            continue
 
-                        description = get_vacancy_description(page, vacancy['url'])
+                        description = preloaded_description if preloaded_description is not None else get_vacancy_description(page, vacancy['url'])
 
                         on_site = on_site_triggers(description, vacancy['title'])
                         if on_site and SKIP_ON_SITE:
