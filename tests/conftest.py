@@ -48,7 +48,7 @@ def _install_stubs() -> None:
         t.OPENROUTER_MODEL = "google/gemma-4-31b-it:free"  # type: ignore[attr-defined]
         t.MY_PROFILE = ""  # type: ignore[attr-defined]
         t.SESSION_FILE = "/tmp/_session"  # type: ignore[attr-defined]
-        t._SAVED_ALL_PROXY = ""  # type: ignore[attr-defined]
+        t.launch_browser = lambda p, headless=True: None  # type: ignore[attr-defined]
         t._acquire_singleton_lock = lambda: None  # type: ignore[attr-defined]
         sys.modules["auto_apply_template"] = t
 

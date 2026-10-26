@@ -12,6 +12,7 @@ HH.ru Автооткликатор
 import fcntl
 import os
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -436,6 +437,26 @@ _SAVED_ALL_PROXY = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy") or
 os.environ.pop("all_proxy", None)
 os.environ.pop("ALL_PROXY", None)
 
+def launch_browser(p, headless: bool = True):
+    """Chromium с общими настройками для ботов и дашборда: системный бинарь,
+    если встроенный в Playwright не установлен, флаги sandbox и прокси."""
+    kwargs: dict = {
+        "headless": headless,
+        "slow_mo": 0 if headless else 300,
+        "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    }
+    exe = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    if not exe and not os.path.exists(p.chromium.executable_path):
+        exe = shutil.which("chromium") or shutil.which("chromium-browser") or ""
+    if exe:
+        kwargs["executable_path"] = exe
+    proxy = os.getenv("HH_PROXY") or _SAVED_ALL_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    if proxy:
+        kwargs["proxy"] = {"server": proxy}
+        print(f"🌐 Прокси: {proxy}")
+    return p.chromium.launch(**kwargs)
+
+
 # Anthropic клиент
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -539,6 +560,10 @@ def _safe_goto(page, url: str, *, wait_until: str = "domcontentloaded",
                 pass
 
 
+class StopRun(Exception):
+    """Прервать весь прогон откликов (капча, закрылось рабочее окно)."""
+
+
 def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = "") -> list:
     """Ищет вакансии на HH.ru.
 
@@ -571,8 +596,8 @@ def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = 
 
         # Проверка на капчу
         if "captcha" in page.title().lower():
-            print("  ⚠️  Сработала капча! Подожди немного и попробуй снова.")
-            return []
+            # Продолжать обход после капчи — прямой путь к бану
+            raise StopRun("капча на странице поиска")
         
         # Ждём загрузки вакансий. Если карточек нет — это пустая страница
         # (за пределами пагинации или узкий запрос), а не ошибка: тихо возвращаем 0.
@@ -606,6 +631,8 @@ def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = 
                 continue
         
         return vacancies
+    except StopRun:
+        raise
     except Exception as e:
         print(f"  ⚠️  Ошибка поиска: {e}")
         return []
@@ -615,11 +642,15 @@ def get_vacancy_description(page, url: str) -> str:
     """Получает описание вакансии"""
     try:
         _safe_goto(page, url, wait_until="domcontentloaded", timeout=15000)
+        if "captcha" in page.title().lower():
+            raise StopRun("капча на странице вакансии")
         page.wait_for_selector("[data-qa='vacancy-description']", timeout=10000)
         
         desc_el = page.locator("[data-qa='vacancy-description']")
         return desc_el.inner_text() if desc_el.count() > 0 else ""
-    except:
+    except StopRun:
+        raise
+    except Exception:
         return ""
 
 
@@ -652,6 +683,41 @@ def _has_screening_questions(page) -> bool:
     return False
 
 
+def _apply_confirmed(page) -> bool:
+    return any(
+        page.locator(f"text={t}").count() > 0
+        for t in ("Вы откликнулись", "Резюме доставлено", "Отклик отправлен")
+    )
+
+
+def _apply_outcome(page, reason: str) -> dict:
+    """success — только если HH подтвердил отклик; иначе unconfirmed → ручная очередь."""
+    if _apply_confirmed(page):
+        return {"status": "success", "reason": reason}
+    return {"status": "unconfirmed", "reason": f"{reason}: нет подтверждения HH"}
+
+
+def _submit_button(page, field=None):
+    """Кнопка отправки — только в окне отклика или в ближайшем к полю письма
+    контейнере с кнопкой (встроенная форма). Поиск по всей странице мог нажать
+    «Откликнуться» в блоке похожих вакансий."""
+    exact = page.locator("button[data-qa='vacancy-response-submit-popup']")
+    if exact.count() > 0:
+        return exact.first
+    scopes = [page.locator("[role='dialog'], [data-qa='modal-overlay']").last]
+    if field is not None:
+        scopes.append(field.locator("xpath=ancestor::*[.//button][1]"))
+    for scope in scopes:
+        if scope.count() == 0:
+            continue
+        btn = scope.locator(
+            "button:has-text('Отправить'), button:has-text('Откликнуться')"
+        ).first
+        if btn.count() > 0:
+            return btn
+    return None
+
+
 def apply_to_vacancy(page, url: str, message: str) -> dict:
     """Откликается на вакансию с сопроводительным письмом"""
     try:
@@ -680,11 +746,11 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                 letter_area.fill(message)
                 page.wait_for_timeout(500)
                 
-                submit_btn = page.locator("button:has-text('Откликнуться'), button:has-text('Отправить'), button[data-qa='vacancy-response-submit-popup']").first
-                if submit_btn.count() > 0:
+                submit_btn = _submit_button(page, letter_area)
+                if submit_btn:
                     submit_btn.click()
                     page.wait_for_timeout(3000)
-                    return {"status": "success", "reason": "С письмом"}
+                    return _apply_outcome(page, "С письмом")
         
         # СПОСОБ 2: Кнопка с выпадающим меню
         apply_btn = page.locator("[data-qa='vacancy-response-link-top']")
@@ -710,11 +776,11 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                         letter_area.fill(message)
                         page.wait_for_timeout(500)
                         
-                        submit_btn = page.locator("button:has-text('Откликнуться'), button:has-text('Отправить')").first
-                        if submit_btn.count() > 0:
+                        submit_btn = _submit_button(page, letter_area)
+                        if submit_btn:
                             submit_btn.click()
                             page.wait_for_timeout(3000)
-                            return {"status": "success", "reason": "С письмом (меню)"}
+                            return _apply_outcome(page, "С письмом (меню)")
         
         # СПОСОБ 3: Просто нажать "Откликнуться" и потом добавить письмо
         if apply_btn.count() > 0:
@@ -820,40 +886,19 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                         return {"status": "error", "reason": "text_insert_failed"}
 
                 print("      📨 Ищу кнопку отправки...")
-                submit_btn = page.locator("button:has-text('Отправить'), button:has-text('Откликнуться'), button:has-text('Отправить письмо')").first
-                if submit_btn.count() > 0:
+                submit_btn = _submit_button(page, letter_area)
+                if submit_btn:
                     print("      📨 Нажимаю кнопку отправки...")
                     submit_btn.click()
                     page.wait_for_timeout(3000)
-                    
-                    # Проверяем успешность отправки
-                    if page.locator("text=Вы откликнулись").count() > 0:
-                        return {"status": "success", "reason": "С письмом (подтверждено)"}
-                    elif page.locator("text=Резюме доставлено").count() > 0:
-                        return {"status": "success", "reason": "С письмом (доставлено)"}
-                    else:
-                        return {"status": "success", "reason": "С письмом (статус неясен)"}
-                else:
-                    # Ищем кнопку по всем текстам
-                    all_buttons = page.locator("button").all()
-                    for btn in all_buttons:
-                        btn_text = btn.inner_text().lower()
-                        if "отправ" in btn_text or "откликн" in btn_text:
-                            print(f"      📨 Нашёл кнопку: {btn_text}")
-                            btn.click()
-                            page.wait_for_timeout(3000)
-                            if page.locator("text=Вы откликнулись").count() > 0:
-                                return {"status": "success", "reason": "С письмом (найдена кнопка)"}
-                            return {"status": "success", "reason": "С письмом (кнопка нажата)"}
-                    
-                    print("      ❌ Кнопка отправки не найдена")
-                    return {"status": "error", "reason": "no_submit_button"}
+                    return _apply_outcome(page, "С письмом")
+                if _apply_confirmed(page):
+                    # основная кнопка уже доставила отклик, письмо приложить не вышло
+                    return {"status": "success", "reason": "Без письма (кнопка письма не найдена)"}
+                print("      ❌ Кнопка отправки в окне отклика не найдена")
+                return {"status": "error", "reason": "no_submit_button"}
 
-            # Проверяем, откликнулись ли без письма
-            if page.locator("text=Вы откликнулись").count() > 0 or page.locator("text=Резюме доставлено").count() > 0:
-                return {"status": "success", "reason": "Без письма"}
-            
-            return {"status": "success", "reason": "Статус неясен"}
+            return _apply_outcome(page, "Без письма")
         
         return {"status": "error", "reason": "Кнопка не найдена"}
         
@@ -928,25 +973,10 @@ def main():
         if emp_n and tit_n:
             applied_index["by_employer_title"].setdefault((emp_n, tit_n), entry)
 
-    proxy = os.getenv("HH_PROXY") or _SAVED_ALL_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     headless = dry_run or os.getenv("HH_HEADLESS", "").lower() in ("1", "true", "yes")
-    launch_kwargs = {"headless": headless, "slow_mo": 0 if headless else 300}
-    # Add Chrome args to avoid sandbox issues in some environments
-    launch_kwargs["args"] = [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-    ]
-    # Use system Chromium if specified
-    chrom_exec = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-    if chrom_exec:
-        launch_kwargs["executable_path"] = chrom_exec
-    if proxy:
-        launch_kwargs["proxy"] = {"server": proxy}
-        print(f"🌐 Прокси: {proxy}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_kwargs)
+        browser = launch_browser(p, headless)
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
         
@@ -961,121 +991,186 @@ def main():
                 "source": "resume",
             })
 
-        for src in sources:
-            print(f"\n{src['label']}")
+        try:
+            for src in sources:
+                print(f"\n{src['label']}")
 
-            for page_num in range(MAX_PAGES):
-                if page_num > 0:
-                    page.wait_for_timeout(2000)
-                print(f"  📄 Страница {page_num + 1}")
+                for page_num in range(MAX_PAGES):
+                    if page_num > 0:
+                        page.wait_for_timeout(2000)
+                    print(f"  📄 Страница {page_num + 1}")
 
-                vacancies = search_vacancies(
-                    page,
-                    query=src.get("query", ""),
-                    page_num=page_num,
-                    resume_id=src.get("resume_id", ""),
-                )
-                print(f"  📊 Найдено вакансий: {len(vacancies)}")
-                # query:N — номер в SEARCH_QUERIES, resume — выдача «по резюме»
-                for v in vacancies:
-                    v["source"] = src["source"]
+                    vacancies = search_vacancies(
+                        page,
+                        query=src.get("query", ""),
+                        page_num=page_num,
+                        resume_id=src.get("resume_id", ""),
+                    )
+                    print(f"  📊 Найдено вакансий: {len(vacancies)}")
+                    # query:N — номер в SEARCH_QUERIES, resume — выдача «по резюме»
+                    for v in vacancies:
+                        v["source"] = src["source"]
                 
-                for i, vacancy in enumerate(vacancies, 1):
-                    print(f"\n  [{i}/{len(vacancies)}] {vacancy['title'][:50]}...")
-                    print(f"      Компания: {vacancy['employer']}")
+                    for i, vacancy in enumerate(vacancies, 1):
+                        print(f"\n  [{i}/{len(vacancies)}] {vacancy['title'][:50]}...")
+                        print(f"      Компания: {vacancy['employer']}")
 
-                    if _metrics:
-                        dup = _metrics.check_applied(
-                            applied_index,
-                            url=vacancy['url'],
-                            employer=vacancy['employer'],
-                            title=vacancy['title'],
-                        )
-                        if dup:
-                            reason = (
-                                f"тот же vacancy_id ({dup.get('vacancy_id')})"
-                                if dup["match"] == "vacancy_id"
-                                else "та же роль у того же работодателя"
+                        if _metrics:
+                            dup = _metrics.check_applied(
+                                applied_index,
+                                url=vacancy['url'],
+                                employer=vacancy['employer'],
+                                title=vacancy['title'],
                             )
-                            print(f"      ⏭️  Уже откликались: {reason}, пропускаю")
-                            stats['skipped'] += 1
-                            continue
-
-                    # Приоритет фильтров (строго в этом порядке):
-                    # 1) AI/LLM + позиция/инфра — таргет, перебивает wrong_role
-                    # 2) ML-маркер — ручная очередь, перебивает wrong_role
-                    # 3) Data/Database/Analytics/Researcher — ручная очередь
-                    # 4) wrong_role — скип
-                    # 5) Python/automation сами по себе — таргет
-                    # 6) AI-only (без позиции) — ручная очередь
-                    # 7) иначе — скип not_target_role
-                    if not is_ai_target_role(vacancy['title']):
-                        # Data/Database/Analytics/Researcher — в ручную очередь
-                        manual_trigger = has_manual_title_trigger(vacancy['title'])
-                        if manual_trigger:
-                            print(f"      🚩 {manual_trigger} в названии, в ручную очередь")
-                            if metrics_sink:
-                                metrics_sink.log_event(
-                                    kind="pending_manual",
-                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                    chat_url=vacancy['url'],
-                                    payload={
-                                        "vacancy_url": vacancy['url'],
-                                        "source": vacancy.get("source", ""),
-                                        "title": vacancy['title'],
-                                        "employer": vacancy['employer'],
-                                        "triggers": [manual_trigger],
-                                        "description_preview": "(описание не загружали — отсев по title)",
-                                    },
+                            if dup:
+                                reason = (
+                                    f"тот же vacancy_id ({dup.get('vacancy_id')})"
+                                    if dup["match"] == "vacancy_id"
+                                    else "та же роль у того же работодателя"
                                 )
-                                _remember_in_index(vacancy)
-                            stats['skipped'] += 1
-                            continue
+                                print(f"      ⏭️  Уже откликались: {reason}, пропускаю")
+                                stats['skipped'] += 1
+                                continue
 
-                        if has_ml_marker(vacancy['title']):
-                            print("      🚩 ML без AI/LLM-контекста, в ручную очередь")
-                            if metrics_sink:
-                                metrics_sink.log_event(
-                                    kind="pending_manual",
-                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                    chat_url=vacancy['url'],
-                                    payload={
-                                        "vacancy_url": vacancy['url'],
-                                        "source": vacancy.get("source", ""),
-                                        "title": vacancy['title'],
-                                        "employer": vacancy['employer'],
-                                        "triggers": ["ml-only-title"],
-                                        "description_preview": "(описание не загружали — отсев по title)",
-                                    },
-                                )
-                                _remember_in_index(vacancy)
-                            stats['skipped'] += 1
-                            continue
+                        # Приоритет фильтров (строго в этом порядке):
+                        # 1) AI/LLM + позиция/инфра — таргет, перебивает wrong_role
+                        # 2) ML-маркер — ручная очередь, перебивает wrong_role
+                        # 3) Data/Database/Analytics/Researcher — ручная очередь
+                        # 4) wrong_role — скип
+                        # 5) Python/automation сами по себе — таргет
+                        # 6) AI-only (без позиции) — ручная очередь
+                        # 7) иначе — скип not_target_role
+                        if not is_ai_target_role(vacancy['title']):
+                            # Data/Database/Analytics/Researcher — в ручную очередь
+                            manual_trigger = has_manual_title_trigger(vacancy['title'])
+                            if manual_trigger:
+                                print(f"      🚩 {manual_trigger} в названии, в ручную очередь")
+                                if metrics_sink:
+                                    metrics_sink.log_event(
+                                        kind="pending_manual",
+                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                        chat_url=vacancy['url'],
+                                        payload={
+                                            "vacancy_url": vacancy['url'],
+                                            "source": vacancy.get("source", ""),
+                                            "title": vacancy['title'],
+                                            "employer": vacancy['employer'],
+                                            "triggers": [manual_trigger],
+                                            "description_preview": "(описание не загружали — отсев по title)",
+                                        },
+                                    )
+                                    _remember_in_index(vacancy)
+                                stats['skipped'] += 1
+                                continue
 
-                        wrong = wrong_role_match(vacancy['title'])
-                        if wrong:
-                            print(f"      ⏭️  Не моя роль ({wrong}), пропускаю")
+                            if has_ml_marker(vacancy['title']):
+                                print("      🚩 ML без AI/LLM-контекста, в ручную очередь")
+                                if metrics_sink:
+                                    metrics_sink.log_event(
+                                        kind="pending_manual",
+                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                        chat_url=vacancy['url'],
+                                        payload={
+                                            "vacancy_url": vacancy['url'],
+                                            "source": vacancy.get("source", ""),
+                                            "title": vacancy['title'],
+                                            "employer": vacancy['employer'],
+                                            "triggers": ["ml-only-title"],
+                                            "description_preview": "(описание не загружали — отсев по title)",
+                                        },
+                                    )
+                                    _remember_in_index(vacancy)
+                                stats['skipped'] += 1
+                                continue
+
+                            wrong = wrong_role_match(vacancy['title'])
+                            if wrong:
+                                print(f"      ⏭️  Не моя роль ({wrong}), пропускаю")
+                                if metrics_sink:
+                                    metrics_sink.log_event(
+                                        kind="skip",
+                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                        chat_url=vacancy['url'],
+                                        payload={
+                                            "reason": "wrong_role",
+                                            "trigger": wrong,
+                                            "title": vacancy['title'],
+                                            "employer": vacancy['employer'],
+                                            "vacancy_url": vacancy['url'],
+                                            "source": vacancy.get("source", ""),
+                                        },
+                                    )
+                                stats['skipped'] += 1
+                                continue
+
+                            if is_language_target_role(vacancy['title']):
+                                pass  # Python/automation таргет — продолжаем обработку
+                            elif has_ai_marker(vacancy['title']):
+                                print("      🚩 AI/LLM без явной позиции, в ручную очередь")
+                                if metrics_sink:
+                                    metrics_sink.log_event(
+                                        kind="pending_manual",
+                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                        chat_url=vacancy['url'],
+                                        payload={
+                                            "vacancy_url": vacancy['url'],
+                                            "source": vacancy.get("source", ""),
+                                            "title": vacancy['title'],
+                                            "employer": vacancy['employer'],
+                                            "triggers": ["ai-only-title"],
+                                            "description_preview": "(описание не загружали — отсев по title)",
+                                        },
+                                    )
+                                    _remember_in_index(vacancy)
+                                stats['skipped'] += 1
+                                continue
+                            else:
+                                print("      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
+                                if metrics_sink:
+                                    metrics_sink.log_event(
+                                        kind="skip",
+                                        vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                        chat_url=vacancy['url'],
+                                        payload={
+                                            "reason": "not_target_role",
+                                            "title": vacancy['title'],
+                                            "employer": vacancy['employer'],
+                                            "vacancy_url": vacancy['url'],
+                                            "source": vacancy.get("source", ""),
+                                        },
+                                    )
+                                stats['skipped'] += 1
+                                continue
+
+                        description = get_vacancy_description(page, vacancy['url'])
+
+                        on_site = on_site_triggers(description, vacancy['title'])
+                        if on_site and SKIP_ON_SITE:
+                            print(f"      🏢 Не удалёнка ({', '.join(on_site[:2])}) — пропускаю")
                             if metrics_sink:
                                 metrics_sink.log_event(
                                     kind="skip",
                                     vacancy=f"{vacancy['title']} · {vacancy['employer']}",
                                     chat_url=vacancy['url'],
                                     payload={
-                                        "reason": "wrong_role",
-                                        "trigger": wrong,
+                                        "reason": "on_site",
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "vacancy_url": vacancy['url'],
                                         "source": vacancy.get("source", ""),
+                                        "triggers": on_site,
                                     },
                                 )
+                                _remember_in_index(vacancy)
                             stats['skipped'] += 1
                             continue
 
-                        if is_language_target_role(vacancy['title']):
-                            pass  # Python/automation таргет — продолжаем обработку
-                        elif has_ai_marker(vacancy['title']):
-                            print("      🚩 AI/LLM без явной позиции, в ручную очередь")
+                        triggers = needs_manual_review(description, vacancy['title'])
+                        # SKIP_ON_SITE=False: возвращаем офисные в ручную очередь (старое поведение).
+                        if on_site and not SKIP_ON_SITE:
+                            triggers = triggers + on_site
+                        if triggers:
+                            print(f"      🚩 В очередь на ручной отклик: {', '.join(triggers[:3])}")
                             if metrics_sink:
                                 metrics_sink.log_event(
                                     kind="pending_manual",
@@ -1086,152 +1181,120 @@ def main():
                                         "source": vacancy.get("source", ""),
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
-                                        "triggers": ["ai-only-title"],
-                                        "description_preview": "(описание не загружали — отсев по title)",
+                                        "triggers": triggers,
+                                        "description_preview": description[:600],
                                     },
                                 )
                                 _remember_in_index(vacancy)
                             stats['skipped'] += 1
+                            d = _apply_delay()
+                            print(f"      ⏳ Пауза {d:.0f} сек...")
+                            time.sleep(d)
                             continue
+
+                        if not dry_run and not _within_work_hours():
+                            raise StopRun(f"рабочее окно {WORK_HOUR_START:02d}:00–{WORK_HOUR_END:02d}:00 закрылось")
+
+                        # Суточный лимит откликов (антибан по объёму): kind='apply'
+                        # пишется после каждого успешного отклика, поэтому счётчик уже
+                        # включает отклики этого прогона. Достигли потолка — дальше не откликаемся.
+                        if not dry_run and _metrics and _metrics.count_applies_since(86400) >= MAX_APPLIES_PER_DAY:
+                            print(f"      🛑 Суточный лимит {MAX_APPLIES_PER_DAY} откликов достигнут — пропускаю до завтра")
+                            stats['skipped'] += 1
+                            continue
+
+                        letter, addendums = build_letter(description, vacancy['title'])
+                        addendum_label = "+" + ",".join(addendums) if addendums else "стандарт"
+                        print(f"      📝 Шаблон [{addendum_label}] · {len(letter)} символов")
+
+                        if dry_run:
+                            print("      🧪 [dry-run] отклик не отправлен, в БД не пишу")
+                            stats['skipped'] += 1
+                            time.sleep(1)
+                            continue
+
+                        print("      📤 Отправляю отклик...")
+                        result = apply_to_vacancy(page, vacancy['url'], letter)
+
+                        if result['status'] in ('success', 'unconfirmed'):
+                            if result['status'] == 'success':
+                                print(f"      ✅ Успех! ({result['reason']})")
+                                stats['success'] += 1
+                            # Кнопка нажата — отклик мог уйти: считаем его в суточный лимит и дедуп,
+                            # неподтверждённый дополнительно уходит на проверку в ручную очередь ниже.
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="apply",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "letter": letter,
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "type": "standard" if not addendums else "standard+addendums",
+                                        "addendums": addendums,
+                                        "send_result": result['reason'],
+                                        "confirmed": result['status'] == 'success',
+                                    },
+                                )
+                                _remember_in_index(vacancy)
+                        if result['status'] == 'success':
+                            pass
+                        elif result['status'] == 'unconfirmed':
+                            print(f"      ❓ {result['reason']} — в ручную очередь, проверь на HH")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="pending_manual",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "triggers": ["unconfirmed_apply"],
+                                        "manual_note": "кнопка нажата, но HH не подтвердил отклик — проверь вакансию",
+                                        "description_preview": (description or "")[:600],
+                                    },
+                                )
+                                _remember_in_index(vacancy)
+                            stats['skipped'] += 1
+                        elif result['status'] == 'skipped':
+                            print(f"      ⏭️  Пропущено: {result['reason']}")
+                            stats['skipped'] += 1
+                        elif result['status'] == 'has_questions':
+                            print(f"      🚩 {result['reason']} — в ручную очередь")
+                            if metrics_sink:
+                                metrics_sink.log_event(
+                                    kind="pending_manual",
+                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
+                                    chat_url=vacancy['url'],
+                                    payload={
+                                        "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
+                                        "title": vacancy['title'],
+                                        "employer": vacancy['employer'],
+                                        "triggers": ["screening_questions"],
+                                        "manual_note": "требуется ответить на вопросы вручную",
+                                        "description_preview": (description or "")[:600],
+                                    },
+                                )
+                                _remember_in_index(vacancy)
+                            stats['skipped'] += 1
                         else:
-                            print("      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
-                            if metrics_sink:
-                                metrics_sink.log_event(
-                                    kind="skip",
-                                    vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                    chat_url=vacancy['url'],
-                                    payload={
-                                        "reason": "not_target_role",
-                                        "title": vacancy['title'],
-                                        "employer": vacancy['employer'],
-                                        "vacancy_url": vacancy['url'],
-                                        "source": vacancy.get("source", ""),
-                                    },
-                                )
-                            stats['skipped'] += 1
-                            continue
-
-                    description = get_vacancy_description(page, vacancy['url'])
-
-                    on_site = on_site_triggers(description, vacancy['title'])
-                    if on_site and SKIP_ON_SITE:
-                        print(f"      🏢 Не удалёнка ({', '.join(on_site[:2])}) — пропускаю")
-                        if metrics_sink:
-                            metrics_sink.log_event(
-                                kind="skip",
-                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                chat_url=vacancy['url'],
-                                payload={
-                                    "reason": "on_site",
-                                    "title": vacancy['title'],
-                                    "employer": vacancy['employer'],
-                                    "vacancy_url": vacancy['url'],
-                                    "source": vacancy.get("source", ""),
-                                    "triggers": on_site,
-                                },
-                            )
-                            _remember_in_index(vacancy)
-                        stats['skipped'] += 1
-                        continue
-
-                    triggers = needs_manual_review(description, vacancy['title'])
-                    # SKIP_ON_SITE=False: возвращаем офисные в ручную очередь (старое поведение).
-                    if on_site and not SKIP_ON_SITE:
-                        triggers = triggers + on_site
-                    if triggers:
-                        print(f"      🚩 В очередь на ручной отклик: {', '.join(triggers[:3])}")
-                        if metrics_sink:
-                            metrics_sink.log_event(
-                                kind="pending_manual",
-                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                chat_url=vacancy['url'],
-                                payload={
-                                    "vacancy_url": vacancy['url'],
-                                    "source": vacancy.get("source", ""),
-                                    "title": vacancy['title'],
-                                    "employer": vacancy['employer'],
-                                    "triggers": triggers,
-                                    "description_preview": description[:600],
-                                },
-                            )
-                            _remember_in_index(vacancy)
-                        stats['skipped'] += 1
+                            print(f"      ❌ Ошибка: {result['reason']}")
+                            stats['error'] += 1
+                    
                         d = _apply_delay()
                         print(f"      ⏳ Пауза {d:.0f} сек...")
                         time.sleep(d)
-                        continue
 
-                    # Суточный лимит откликов (антибан по объёму): kind='apply'
-                    # логируется ниже ДО отправки, поэтому счётчик уже включает
-                    # отклики этого прогона. Достигли потолка — дальше не откликаемся.
-                    if not dry_run and _metrics and _metrics.count_applies_since(86400) >= MAX_APPLIES_PER_DAY:
-                        print(f"      🛑 Суточный лимит {MAX_APPLIES_PER_DAY} откликов достигнут — пропускаю до завтра")
-                        stats['skipped'] += 1
-                        continue
-
-                    letter, addendums = build_letter(description, vacancy['title'])
-                    addendum_label = "+" + ",".join(addendums) if addendums else "стандарт"
-                    print(f"      📝 Шаблон [{addendum_label}] · {len(letter)} символов")
-
-                    if dry_run:
-                        print("      🧪 [dry-run] отклик не отправлен, в БД не пишу")
-                        stats['skipped'] += 1
-                        time.sleep(1)
-                        continue
-
-                    print("      📤 Отправляю отклик...")
-                    result = apply_to_vacancy(page, vacancy['url'], letter)
-
-                    if result['status'] == 'success':
-                        print(f"      ✅ Успех! ({result['reason']})")
-                        stats['success'] += 1
-                        # Записываем в базу ТОЛЬКО после успешной отправки
-                        if metrics_sink:
-                            metrics_sink.log_event(
-                                kind="apply",
-                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                chat_url=vacancy['url'],
-                                payload={
-                                    "letter": letter,
-                                    "vacancy_url": vacancy['url'],
-                                    "source": vacancy.get("source", ""),
-                                    "title": vacancy['title'],
-                                    "employer": vacancy['employer'],
-                                    "type": "standard" if not addendums else "standard+addendums",
-                                    "addendums": addendums,
-                                },
-                            )
-                            _remember_in_index(vacancy)
-                    elif result['status'] == 'skipped':
-                        print(f"      ⏭️  Пропущено: {result['reason']}")
-                        stats['skipped'] += 1
-                    elif result['status'] == 'has_questions':
-                        print(f"      🚩 {result['reason']} — в ручную очередь")
-                        if metrics_sink:
-                            metrics_sink.log_event(
-                                kind="pending_manual",
-                                vacancy=f"{vacancy['title']} · {vacancy['employer']}",
-                                chat_url=vacancy['url'],
-                                payload={
-                                    "vacancy_url": vacancy['url'],
-                                    "source": vacancy.get("source", ""),
-                                    "title": vacancy['title'],
-                                    "employer": vacancy['employer'],
-                                    "triggers": ["screening_questions"],
-                                    "manual_note": "требуется ответить на вопросы вручную",
-                                    "description_preview": (description or "")[:600],
-                                },
-                            )
-                            _remember_in_index(vacancy)
-                        stats['skipped'] += 1
-                    else:
-                        print(f"      ❌ Ошибка: {result['reason']}")
-                        stats['error'] += 1
-                    
-                    d = _apply_delay()
-                    print(f"      ⏳ Пауза {d:.0f} сек...")
-                    time.sleep(d)
-
+        except StopRun as e:
+            print(f"\n🛑 Прогон остановлен: {e}")
+            if _metrics:
+                _metrics.log_event(kind="error", payload={"where": "apply_run", "error": str(e)})
         browser.close()
     
     print("\n" + "="*50)

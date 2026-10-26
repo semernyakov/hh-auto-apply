@@ -25,7 +25,7 @@ from typing import Any
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
 
-from auto_apply_template import _SAVED_ALL_PROXY, SESSION_FILE
+from auto_apply_template import SESSION_FILE, launch_browser
 import metrics
 
 load_dotenv()
@@ -453,29 +453,9 @@ def _run_once() -> dict[str, int]:
         print("\n❌ Сессия не найдена, сначала запусти python3 hh_login.py")
         return {"boosted": 0, "cooldown": 0, "errors": 1, "no_button": 0}
 
-    proxy = (
-        os.getenv("HH_PROXY")
-        or _SAVED_ALL_PROXY
-        or os.getenv("HTTPS_PROXY")
-        or os.getenv("https_proxy")
-    )
-    launch_kwargs = {"headless": True, "slow_mo": 0}
-    # Add Chrome args to avoid sandbox issues in some environments
-    launch_kwargs["args"] = [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-    ]
-    # Use system Chromium if specified
-    chrom_exec = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-    if chrom_exec:
-        launch_kwargs["executable_path"] = chrom_exec
-    if proxy:
-        launch_kwargs["proxy"] = {"server": proxy}
-        print(f"🌐 Прокси: {proxy}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_kwargs)
+        browser = launch_browser(p, headless=True)
         ctx = browser.new_context(storage_state=SESSION_FILE)
         page = ctx.new_page()
         try:
