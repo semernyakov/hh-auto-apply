@@ -43,18 +43,16 @@ def _acquire_singleton_lock(name: str):
     fh.flush()
     return fh
 
+import profile_store
+
 try:
-    from profile import (
-        SEARCH_QUERIES,
-        LETTER_SIGNATURE as _LETTER_SIGNATURE,
-        SALARY_ADDENDUM,
-        MY_PROFILE,
-    )
-except ImportError as e:
-    sys.exit(
-        "ERROR: profile.py не найден. Скопируй profile.example.py → profile.py "
-        f"и заполни своими данными.\nДетали: {e}"
-    )
+    PROFILE = profile_store.load()
+except FileNotFoundError as e:
+    sys.exit(f"ERROR: {e}")
+SEARCH_QUERIES = PROFILE["search_queries"]
+_LETTER_SIGNATURE = PROFILE["letter_signature"]
+SALARY_ADDENDUM = PROFILE["salary_addendum"]
+MY_PROFILE = PROFILE["my_profile"]
 
 try:
     import metrics as _metrics
@@ -120,7 +118,8 @@ def _seconds_until_work_hours() -> int:
 # ID резюме для «подходящих» вакансий от HH (https://hh.ru/applicant/resumes
 # → кнопка «N подходящих вакансий» рядом с резюме). HH сам подбирает релевантное
 # по нашему профилю — добавляем как ещё один источник к SEARCH_QUERIES.
-RESUME_ID = os.getenv("HH_RESUME_ID", "")
+# HH_RESUME_ID в окружении перекрывает значение из раздела «Резюме».
+RESUME_ID = os.getenv("HH_RESUME_ID") or PROFILE["resume_id"]
 
 # Мы ищем только удалёнку. При True офисные вакансии (сработал ON_SITE_TRIGGERS)
 # сразу пропускаются (skip), а не копятся в ручной очереди pending_manual.
@@ -136,9 +135,7 @@ SESSION_FILE = os.path.join(N8N_FILES_DIR, "hh_session.json")
 # По умолчанию шлём этот текст без вызова Claude (быстро, бесплатно).
 # Claude используется только для ответов в чатах (auto_reply.py).
 
-_LETTER_BODY = """Добрый день!
-
-Мне очень понравилась ваша вакансия, я был бы рад применить свой опыт и знания в вашей компании, в связи с этим прошу вас рассмотреть моё резюме."""
+_LETTER_BODY = PROFILE["letter_body"] or profile_store.DEFAULT_LETTER_BODY
 
 # Триггеры, которые означают «работодатель просит указать ожидаемую ЗП».
 # При срабатывании добавляем SALARY_ADDENDUM к стандартному письму
@@ -178,6 +175,19 @@ def build_letter(description: str, title: str = "") -> tuple[str, list[str]]:
         addendums.append("salary")
     parts.append(_LETTER_SIGNATURE)
     return "\n\n".join(parts), addendums
+
+
+def reload_profile() -> None:
+    """Перечитать профиль в этом процессе — дашборд вызывает после сохранения
+    раздела «Резюме». Работающие боты подхватят изменения после перезапуска."""
+    global PROFILE, SEARCH_QUERIES, _LETTER_SIGNATURE, SALARY_ADDENDUM, MY_PROFILE, _LETTER_BODY, RESUME_ID
+    PROFILE = profile_store.load()
+    SEARCH_QUERIES = PROFILE["search_queries"]
+    _LETTER_SIGNATURE = PROFILE["letter_signature"]
+    SALARY_ADDENDUM = PROFILE["salary_addendum"]
+    MY_PROFILE = PROFILE["my_profile"]
+    _LETTER_BODY = PROFILE["letter_body"] or profile_store.DEFAULT_LETTER_BODY
+    RESUME_ID = os.getenv("HH_RESUME_ID") or PROFILE["resume_id"]
 
 
 # Совместимость, где-то в коде может использоваться константа.
