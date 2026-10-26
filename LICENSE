@@ -1,21 +1,58 @@
-MIT License
+Проприетарная лицензия / Proprietary License
 
-Copyright (c) 2026 semernyakov and contributors
+Copyright (c) 2026 semernyakov. Все права защищены. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Русский
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Программное обеспечение hh-auto-apply, включая исходный код, документацию,
+   изображения и иные материалы этого репозитория (далее — «Программа»),
+   является объектом исключительных прав правообладателя.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. Исходный код опубликован только для ознакомления. Разрешается просматривать
+   его на GitHub и создавать форки средствами GitHub в пределах, которые
+   требуют Условия использования GitHub. Иные права не предоставляются.
+
+3. Без предварительного письменного разрешения правообладателя запрещается:
+   использовать Программу (в том числе запускать её); копировать её целиком
+   или частично; изменять её и создавать производные работы; распространять,
+   публиковать, сублицензировать, продавать или передавать её третьим лицам;
+   использовать её в коммерческих целях, включая оказание услуг на её основе.
+
+4. Права на использование Программы, в том числе коммерческое, предоставляются
+   по отдельному письменному договору с правообладателем.
+
+5. Программа предоставляется «как есть», без каких-либо гарантий, явных или
+   подразумеваемых. Правообладатель не несёт ответственности за любые убытки,
+   связанные с использованием Программы. Подробнее — DISCLAIMER.md.
+
+6. Версии Программы, опубликованные до 26 октября 2026 года включительно
+   (по коммит a8c4b49), распространялись по лицензии MIT и остаются под ней.
+   Настоящая лицензия действует для последующих версий.
+
+English
+
+1. The hh-auto-apply software, including the source code, documentation,
+   images and other materials in this repository (the "Software"), is
+   protected by the exclusive rights of the copyright holder.
+
+2. The source code is published for viewing only. You may view it on GitHub
+   and fork it through GitHub to the extent required by the GitHub Terms of
+   Service. No other rights are granted.
+
+3. Without the prior written permission of the copyright holder you may not:
+   use the Software (including running it); copy it in whole or in part;
+   modify it or create derivative works; distribute, publish, sublicense,
+   sell or otherwise transfer it to third parties; use it for any commercial
+   purpose, including providing services based on it.
+
+4. Rights to use the Software, including commercial use, are granted only
+   under a separate written agreement with the copyright holder.
+
+5. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE. See
+   DISCLAIMER.md.
+
+6. Versions of the Software published on or before October 26, 2026 (up to
+   commit a8c4b49) were distributed under the MIT License and remain under it.
+   This license applies to subsequent versions.
