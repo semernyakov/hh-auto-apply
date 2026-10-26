@@ -860,7 +860,7 @@ except Exception:
 # OWN_TEXT_MARKERS в profile.py:
 #   OWN_TEXT_MARKERS = (
 #       "вынужден вам отказать", "извините, не подойдёт",
-#       "с уважением, иван", "благодарю за предложение",
+#       "с уважением, иван петров", "благодарю за предложение",
 #   )
 OWN_TEXT_MARKERS: tuple[str, ...] = tuple(
     s.strip().lower() for s in _PROFILE.get("own_text_markers", ()) if s and s.strip()
