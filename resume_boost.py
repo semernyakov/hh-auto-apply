@@ -162,8 +162,8 @@ def _find_boost_button(scope) -> Any | None:
                     if sel == "[data-qa='resume-renewal-manual-text']":
                         return None
                     return el
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  ⚠️  Ошибка при поиске кнопки: {e}")
 
     # 2) Селекторо-независимый поиск: любой кликабельный элемент в области,
     #    чей видимый текст содержит «Поднять в поиске».
@@ -182,7 +182,8 @@ def _find_boost_button(scope) -> Any | None:
                 if not el.is_visible(timeout=500):
                     continue
                 txt = (el.inner_text(timeout=800) or "").lower()
-            except Exception:
+            except Exception as e:
+                print(f"  ⚠️  Ошибка чтения {css}[{i}]: {e}")
                 continue
             if "поднять" not in txt:
                 continue
@@ -210,7 +211,8 @@ def _dismiss_modals(page, max_attempts: int = 3) -> None:
             overlay = page.locator("[data-qa='modal-overlay']")
             if overlay.count() == 0:
                 return
-        except Exception:
+        except Exception as e:
+            print(f"  ⚠️  Ошибка при проверке модалки: {e}")
             return
 
         # 1. Escape — самый надёжный способ закрыть модалку на HH
@@ -219,8 +221,8 @@ def _dismiss_modals(page, max_attempts: int = 3) -> None:
             page.wait_for_timeout(500)
             if page.locator("[data-qa='modal-overlay']").count() == 0:
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️  Ошибка закрытия модалки через Escape: {e}")
 
         # 2. Клик по кнопке закрытия внутри модалки
         close_selectors = [
@@ -243,7 +245,8 @@ def _dismiss_modals(page, max_attempts: int = 3) -> None:
                         return
                     closed = True
                     break
-            except Exception:
+            except Exception as e:
+                print(f"  ⚠️  Ошибка при клике по {sel}: {e}")
                 continue
 
         if closed:
@@ -257,15 +260,16 @@ def _dismiss_modals(page, max_attempts: int = 3) -> None:
                 });
             """)
             page.wait_for_timeout(300)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️  Ошибка при скрытии overlay JS: {e}")
         return
 
 
 def _scope_text(scope) -> str:
     try:
         return scope.inner_text(timeout=3000)
-    except Exception:
+    except Exception as e:
+        print(f"  ⚠️  Ошибка чтения текста блока: {e}")
         return ""
 
 
@@ -280,7 +284,8 @@ def _resume_title(scope) -> str:
         if loc.count() > 0:
             try:
                 return (loc.first.inner_text(timeout=2000) or "").strip().splitlines()[0][:120]
-            except Exception:
+            except Exception as e:
+                print(f"  ⚠️  Ошибка чтения заголовка {sel}: {e}")
                 continue
     return ""
 
@@ -297,7 +302,8 @@ def boost_resume(card) -> dict[str, Any]:
     if not btn and not has_label:
         try:
             btn = _find_boost_button(card.page)
-        except Exception:
+        except Exception as e:
+            print(f"  ⚠️  Ошибка при глобальном поиске кнопки: {e}")
             btn = None
 
     if not btn:
@@ -308,7 +314,8 @@ def boost_resume(card) -> dict[str, Any]:
 
     try:
         is_disabled = btn.is_disabled(timeout=2000)
-    except Exception:
+    except Exception as e:
+        print(f"  ⚠️  Ошибка проверки disabled кнопки: {e}")
         is_disabled = False
 
     # Если у кнопки виден таймер ожидания, считаем её недоступной.
@@ -336,7 +343,8 @@ def boost_resume(card) -> dict[str, Any]:
         # Фоллбэк: принудительный клик, если overlay не закрылся
         try:
             btn.click(timeout=3000, force=True)
-        except Exception:
+        except Exception as force_err:
+            print(f"  ⚠️  Принудительный клик не удался: {force_err}")
             return {"status": "error", "title": title, "reason": f"click timeout: {e}"}
     except Exception as e:
         return {"status": "error", "title": title, "reason": str(e)[:200]}
@@ -344,8 +352,8 @@ def boost_resume(card) -> dict[str, Any]:
     # Дать странице обновить состояние кнопки/подписи.
     try:
         card.page.wait_for_timeout(2500)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  ⚠️  Ошибка ожидания обновления страницы: {e}")
 
     new_cooldown = _parse_cooldown(_scope_text(card))
     return {
@@ -356,7 +364,18 @@ def boost_resume(card) -> dict[str, Any]:
 
 
 def boost_all(page) -> dict[str, Any]:
-    page.goto(RESUMES_URL, wait_until="domcontentloaded", timeout=30000)
+    # Safe navigation with retries
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            page.goto(RESUMES_URL, wait_until="domcontentloaded", timeout=60000)
+            break
+        except PlaywrightTimeoutError as e:
+            if attempt == max_attempts:
+                raise
+            print(f"  ⚠️  Таймаут при загрузке страницы резюме (попытка {attempt}/{max_attempts}), пробую снова...")
+            page.wait_for_timeout(2000)  # небольшая пауза перед повтором
+
     try:
         page.wait_for_load_state("networkidle", timeout=8000)
     except PlaywrightTimeoutError:
@@ -441,6 +460,16 @@ def _run_once() -> dict[str, int]:
         or os.getenv("https_proxy")
     )
     launch_kwargs = {"headless": True, "slow_mo": 0}
+    # Add Chrome args to avoid sandbox issues in some environments
+    launch_kwargs["args"] = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+    ]
+    # Use system Chromium if specified
+    chrom_exec = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    if chrom_exec:
+        launch_kwargs["executable_path"] = chrom_exec
     if proxy:
         launch_kwargs["proxy"] = {"server": proxy}
         print(f"🌐 Прокси: {proxy}")
@@ -459,23 +488,27 @@ def main() -> None:
     # Создаём PID-файл для дашборда
     pid_file = Path("/tmp/hh_resume_boost.pid")
     pid_file.write_text(str(os.getpid()))
-    
+
     # Очищаем и открываем лог-файл для записи
     log_file = Path("/tmp/hh_resume_boost.log")
     log_fh = open(log_file, "w", buffering=1)
     sys.stdout = log_fh
     sys.stderr = log_fh
-    
-    print("\n" + "=" * 50)
-    print("⬆️  HH.ru авто-подъём резюме" + (" [DRY-RUN]" if DRY_RUN else ""))
-    print("=" * 50)
-    stats = _run_once()
-    print(
-        f"\nИтоги: ✅ {stats['boosted']} поднято · "
-        f"⏳ {stats['cooldown']} в кулдауне · "
-        f"⚠️ {stats['no_button']} без кнопки · "
-        f"❌ {stats['errors']} ошибок"
-    )
+    try:
+        print("\n" + "=" * 50)
+        print("⬆️  HH.ru авто-подъём резюме" + (" [DRY-RUN]" if DRY_RUN else ""))
+        print("=" * 50)
+        stats = _run_once()
+        print(
+            f"\nИтоги: ✅ {stats['boosted']} поднято · "
+            f"⏳ {stats['cooldown']} в кулдауне · "
+            f"⚠️ {stats['no_button']} без кнопки · "
+            f"❌ {stats['errors']} ошибок"
+        )
+    finally:
+        # Вернуть потоки до закрытия, иначе traceback упавшего прохода пропадёт
+        sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+        log_fh.close()
 
 
 def watch_loop() -> None:
