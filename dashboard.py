@@ -27,6 +27,7 @@ from auto_apply_template import (
     WORK_HOUR_START,
     apply_to_vacancy,
     build_letter,
+    launch_browser,
 )
 from auto_reply import SESSION_FILE
 
@@ -322,7 +323,7 @@ def api_robot_questionnaire_send(event_id: int, body: dict = Body(...)) -> JSONR
         from auto_reply import post_reply
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = launch_browser(p, headless=True)
             ctx = browser.new_context(storage_state=str(SESSION_FILE))
             page = ctx.new_page()
             try:
@@ -406,7 +407,7 @@ def api_pending_apply(event_id: int, body: dict = Body(...)) -> JSONResponse:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = launch_browser(p, headless=True)
             ctx = browser.new_context(storage_state=str(SESSION_FILE))
             page = ctx.new_page()
             try:
@@ -416,7 +417,8 @@ def api_pending_apply(event_id: int, body: dict = Body(...)) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"playwright: {e}"}, status_code=500)
 
-    if result.get("status") == "success":
+    # unconfirmed: кнопка нажата, HH не подтвердил — фиксируем, чтобы повтор из очереди не ушёл дважды
+    if result.get("status") in ("success", "unconfirmed"):
         metrics.log_event(
             kind="apply",
             vacancy=pending.get("vacancy", ""),
@@ -473,7 +475,7 @@ def api_pending_send(event_id: int, body: dict = Body(...)) -> JSONResponse:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = launch_browser(p, headless=True)
             ctx = browser.new_context(storage_state=str(SESSION_FILE))
             page = ctx.new_page()
             try:
@@ -483,7 +485,8 @@ def api_pending_send(event_id: int, body: dict = Body(...)) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"playwright: {e}"}, status_code=500)
 
-    if result.get("status") == "success":
+    # unconfirmed: кнопка нажата, HH не подтвердил — фиксируем, чтобы повтор из очереди не ушёл дважды
+    if result.get("status") in ("success", "unconfirmed"):
         metrics.log_event(
             kind="apply",
             vacancy=pending.get("vacancy", ""),
