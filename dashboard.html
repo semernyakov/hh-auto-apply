@@ -213,6 +213,7 @@ tr.child td:first-child { padding-left: 36px; }
 .settings dt { color: var(--muted); }
 .settings dd { margin: 0; font-weight: 600; text-align: right; }
 .activity { margin-top: 18px; }
+.sub-title { margin: 22px 0 8px; font-size: 15px; font-weight: 600; }
 .log-tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
 pre.log {
   margin: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius);
@@ -450,6 +451,13 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
           <tbody id="rates"></tbody>
         </table>
       </div>
+      <h3 class="sub-title">Ошибки за 7 дней — по причинам</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Причина</th><th>Сколько</th><th>Последняя</th></tr></thead>
+          <tbody id="err-reasons"><tr><td colspan="3" class="muted">Загрузка…</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -552,10 +560,29 @@ const TRIGGER = {
   'screening_questions': 'вопросы работодателя', 'unconfirmed_apply': 'HH не подтвердил отклик',
 };
 const SKIP = {
-  duplicate: 'уже откликались', wrong_role: 'чужая роль', not_target_role: 'не моя роль по названию',
+  duplicate: 'уже откликались', applied_on_hh: 'уже откликались на HH', wrong_role: 'чужая роль', not_target_role: 'не моя роль по названию',
   on_site: 'не удалёнка', cooldown: 'повтор в чате, пауза', no_reply_needed: 'ответ не нужен',
   banned_phrase: 'ответ заблокирован фильтром', boost_cooldown: 'подъём ещё недоступен',
+  ml_classified: 'разбор ML-вакансии',
 };
+// Ошибки: коды бота → понятный текст (сопоставление по началу строки).
+const ERRORS = [
+  ['no_textarea', 'не появилось поле для письма'], ['Кнопка не найдена', 'нет кнопки «Откликнуться»'],
+  ['no_submit_button', 'нет кнопки отправки'], ['text_insert_failed', 'не удалось вставить письмо'],
+  ['сессия HH истекла', 'сессия HH истекла — нужен вход'], ['HH не открывается', 'HH не открылся'],
+];
+function errorText(err){
+  const s = String(err || '');
+  if (/credit balance/i.test(s)) return 'нет денег на счёте Anthropic';
+  const hit = ERRORS.find(([k]) => s.startsWith(k));
+  return hit ? hit[1] : s;
+}
+function skipTrigger(t){
+  t = String(t || '');
+  if (t.startsWith('lang:')) return 'язык ' + t.slice(5);
+  if (t.startsWith('non-tech:')) return 'нетехническая роль: ' + t.slice(9);
+  return t;
+}
 const SIGNAL = { interview: 'Зовут на интервью', contact_request: 'Просят контакт', under_review: 'Резюме на рассмотрении' };
 
 /* ================= сводка и боты ================= */
@@ -892,10 +919,14 @@ $('#group-by-chat').checked = grouped;
 
 function detailsOf(e){
   const p = e.payload || {};
-  if (e.kind === 'skip') return SKIP[p.reason] || p.reason || (p.reply === 'SKIP' ? 'модель решила не отвечать' : '');
+  if (e.kind === 'skip') {
+    const base = SKIP[p.reason] || p.reason || (p.reply === 'SKIP' ? 'модель решила не отвечать' : '');
+    const trig = p.reason === 'applied_on_hh' ? '' : skipTrigger(p.trigger);
+    return trig && trig !== base ? `${base} — ${trig}` : base;
+  }
   if (e.kind === 'apply') return p.letter || '';
   if (e.kind === 'reply' || e.kind === 'reply_unsent') return p.reply || '';
-  if (e.kind === 'error') return p.error || '';
+  if (e.kind === 'error') return errorText(p.error);
   if (e.kind === 'pending_manual') return (p.triggers || []).map(t => TRIGGER[t] || t).join(', ');
   if (e.kind === 'positive_signal') return SIGNAL[p.signal_type] || '';
   if (e.kind === 'rejection') return stripRole(lastIncoming(p.history_tail));
@@ -1023,6 +1054,7 @@ function showView(){
   });
   if (view === 'history') { refreshEvents(); refreshCounts(); }
   if (view === 'logs') refreshLog();
+  if (view === 'settings') refreshErrorReasons();
   if (view === 'resume' && !profileDirty) loadProfile();
 }
 window.addEventListener('hashchange', showView);
@@ -1092,6 +1124,25 @@ window.addEventListener('beforeunload', (ev) => { if (profileDirty) { ev.prevent
 
 /* ================= логи ================= */
 let logName = 'apply';
+async function refreshErrorReasons(){
+  try {
+    const d = await (await fetch('/api/events?kind=error&limit=500')).json();
+    const since = Date.now() / 1000 - 7 * 86400, by = new Map();
+    for (const e of d.events || []) {
+      if (e.ts < since) continue;
+      const k = errorText((e.payload || {}).error);
+      const g = by.get(k) || { n: 0, last: 0 };
+      g.n += 1; g.last = Math.max(g.last, e.ts); by.set(k, g);
+    }
+    const rows = [...by.entries()].sort((a, b) => b[1].n - a[1].n);
+    $('#err-reasons').innerHTML = rows.length
+      ? rows.map(([k, g]) => `<tr><td>${esc(k)}</td><td>${g.n}</td><td>${esc(fmtWhen(g.last))}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="muted">Ошибок не было</td></tr>';
+  } catch (_) {
+    $('#err-reasons').innerHTML = '<tr><td colspan="3" class="muted">Не удалось загрузить</td></tr>';
+  }
+}
+
 async function refreshLog(){
   if (view !== 'logs') return;
   try {
