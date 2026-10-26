@@ -1362,6 +1362,12 @@ def main():
         page = context.new_page()
 
         print("\n🔍 Открываю список чатов...")
+        from auto_apply_template import SESSION_EXPIRED, hh_logged_in
+        if hh_logged_in(page) is False:
+            print(f"\n🛑 {SESSION_EXPIRED}")
+            metrics.log_event(kind="error", payload={"where": "reply_run", "error": SESSION_EXPIRED})
+            browser.close()
+            return
         chats = find_unread_chats(page)
         print(f"📨 Непрочитанных чатов: {len(chats)}\n")
         seen = {u for u, _ in chats}

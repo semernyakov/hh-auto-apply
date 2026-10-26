@@ -7,6 +7,7 @@ HH.ru Авторизация
 import os
 import sys
 import json
+import time
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 
@@ -27,32 +28,59 @@ def login():
     print("🔐 HH.ru Авторизация")
     print("="*50)
     
-    proxy_url = os.getenv("HTTP_PROXY", os.getenv("http_proxy", ""))
+    # Системный Chromium, sandbox-флаги и прокси — как у ботов.
+    from auto_apply_template import launch_browser
     with sync_playwright() as p:
-        launch_opts = {"headless": False}
-        if proxy_url:
-            launch_opts["proxy"] = {"server": proxy_url}
-        browser = p.chromium.launch(**launch_opts)
+        browser = launch_browser(p, headless=False)
         context = browser.new_context()
-        
+
         page = context.new_page()
         page.goto("https://hh.ru/login", timeout=120000, wait_until="domcontentloaded")
-        
-        print("\n📌 Инструкция:")
-        print("1. В открывшемся браузере войди в свой аккаунт HH.ru")
-        print("2. Дождись загрузки личного кабинета")
-        print("3. Вернись сюда и нажми Enter")
-        print("\n⏳ Жду пока ты залогинишься...")
-        
-        input("\n✅ Нажми Enter когда залогинился...")
-        
-        # Сохраняем сессию
-        context.storage_state(path=SESSION_FILE)
-        
+
+        print("\n📌 Войди в свой аккаунт HH.ru в открывшемся браузере.")
+        print("⏳ Сессия сохранится сама, как только вход завершится (до 10 минут).")
+
+        # Через `!` в Claude Code нет stdin — ждём входа по страницам, а не по Enter.
+        # Состояние запоминаем на каждом шаге: если окно закроют, сохраним последнее.
+        logged, last_state = False, None
+        deadline = time.time() + 600
+        while time.time() < deadline and not logged:
+            time.sleep(3)
+            try:
+                pages = [pg for pg in context.pages if not pg.is_closed()]
+                if not pages:
+                    break
+                last_state = context.storage_state()
+                for pg in pages:
+                    path = pg.url.split("?")[0]
+                    if "hh.ru" not in path or "login" in path or "/account/" in path:
+                        continue
+                    # В шапке залогиненного HH бывают скрытые «Войти» — считаем только видимые.
+                    guest = pg.locator("header a:has-text('Войти'), header button:has-text('Войти')")
+                    if pg.locator("header").count() and guest.filter(visible=True).count() == 0:
+                        logged = True
+                        break
+            except Exception:
+                continue
+
+        if logged:
+            time.sleep(3)
+            context.storage_state(path=SESSION_FILE)
+        elif last_state:
+            with open(SESSION_FILE, "w") as f:
+                json.dump(last_state, f)
+            print("\n⚠️ Вход не распознан — сохранено последнее состояние браузера, проверьте ботом.")
+        else:
+            print("\n❌ Сессия не сохранена.")
+            sys.exit(1)
+
         print(f"\n✅ Сессия сохранена в {SESSION_FILE}")
         print("🎉 Теперь можешь запускать auto_apply.py!")
         
-        browser.close()
+        try:
+            browser.close()
+        except Exception:
+            pass
 
 def get_cookies():
     if not os.path.exists(SESSION_FILE):

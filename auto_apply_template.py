@@ -777,6 +777,29 @@ def _has_screening_questions(page) -> bool:
     return False
 
 
+def hh_logged_in(page) -> bool | None:
+    """Жива ли сессия HH: True/False, None — страницу так и не удалось открыть.
+    Без входа HH пускает гостем: поиск работает, но вместо окна отклика — форма
+    «напишите телефон», выдача «по резюме» и чаты недоступны."""
+    for attempt in range(2):
+        try:
+            page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            break
+        except Exception:
+            if attempt:
+                return None
+            page.wait_for_timeout(5000)
+    if "login" in page.url.split("?")[0]:
+        return False
+    # HH больше не уводит гостя на страницу входа — смотрим кнопку «Войти» в шапке
+    guest = page.locator("header a:has-text('Войти'), header button:has-text('Войти'), [data-qa='login']")
+    return guest.filter(visible=True).count() == 0
+
+
+SESSION_EXPIRED = "сессия HH истекла — войдите заново: .venv/bin/python hh_login.py"
+
+
 def _apply_confirmed(page) -> bool:
     return any(
         page.locator(f"text={t}").count() > 0
@@ -919,6 +942,9 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                     continue
             
             if not letter_area:
+                # основная кнопка могла уже отправить отклик без письма
+                if _apply_confirmed(page):
+                    return {"status": "success", "reason": "Без письма (поле для письма не появилось)"}
                 print("      ❌ Поле для письма не найдено")
                 return {"status": "error", "reason": "no_textarea"}
 
@@ -1086,6 +1112,11 @@ def main():
             })
 
         try:
+            logged = hh_logged_in(page)
+            if logged is False:
+                raise StopRun(SESSION_EXPIRED)
+            if logged is None:
+                raise StopRun("HH не открывается — проверьте сеть или прокси, обход перенесён")
             for src in sources:
                 print(f"\n{src['label']}")
 
