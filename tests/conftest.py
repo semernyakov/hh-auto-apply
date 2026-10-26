@@ -22,6 +22,11 @@ def _install_stubs() -> None:
         m.Anthropic = lambda **kw: None  # type: ignore[attr-defined]
         sys.modules["anthropic"] = m
 
+    if "openai" not in sys.modules:
+        o = types.ModuleType("openai")
+        o.OpenAI = lambda **kw: None  # type: ignore[attr-defined]
+        sys.modules["openai"] = o
+
     if "playwright" not in sys.modules:
         sys.modules["playwright"] = types.ModuleType("playwright")
     if "playwright.sync_api" not in sys.modules:
@@ -39,6 +44,8 @@ def _install_stubs() -> None:
         t = types.ModuleType("auto_apply_template")
         t.ANTHROPIC_API_KEY = ""  # type: ignore[attr-defined]
         t.ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # type: ignore[attr-defined]
+        t.OPENROUTER_API_KEY = ""  # type: ignore[attr-defined]
+        t.OPENROUTER_MODEL = "google/gemma-4-31b-it:free"  # type: ignore[attr-defined]
         t.MY_PROFILE = ""  # type: ignore[attr-defined]
         t.SESSION_FILE = "/tmp/_session"  # type: ignore[attr-defined]
         t._acquire_singleton_lock = lambda: None  # type: ignore[attr-defined]
