@@ -27,12 +27,16 @@ def login():
     print("🔐 HH.ru Авторизация")
     print("="*50)
     
+    proxy_url = os.getenv("HTTP_PROXY", os.getenv("http_proxy", ""))
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        launch_opts = {"headless": False}
+        if proxy_url:
+            launch_opts["proxy"] = {"server": proxy_url}
+        browser = p.chromium.launch(**launch_opts)
         context = browser.new_context()
         
         page = context.new_page()
-        page.goto("https://hh.ru/login")
+        page.goto("https://hh.ru/login", timeout=120000, wait_until="domcontentloaded")
         
         print("\n📌 Инструкция:")
         print("1. В открывшемся браузере войди в свой аккаунт HH.ru")

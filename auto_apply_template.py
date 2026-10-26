@@ -430,6 +430,10 @@ def has_ml_marker(title: str) -> bool:
 
 # ============== КОД ==============
 
+# Anthropic SDK не умеет SOCKS-прокси в all_proxy — убираем перед импортом
+os.environ.pop("all_proxy", None)
+os.environ.pop("ALL_PROXY", None)
+
 # Anthropic клиент
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -925,6 +929,16 @@ def main():
     proxy = os.getenv("HH_PROXY") or os.getenv("ALL_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     headless = dry_run or os.getenv("HH_HEADLESS", "").lower() in ("1", "true", "yes")
     launch_kwargs = {"headless": headless, "slow_mo": 0 if headless else 300}
+    # Add Chrome args to avoid sandbox issues in some environments
+    launch_kwargs["args"] = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+    ]
+    # Use system Chromium if specified
+    chrom_exec = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    if chrom_exec:
+        launch_kwargs["executable_path"] = chrom_exec
     if proxy:
         launch_kwargs["proxy"] = {"server": proxy}
         print(f"🌐 Прокси: {proxy}")
