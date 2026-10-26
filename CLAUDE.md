@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## О проекте
 
-hh-auto-apply — личный инструмент для поиска работы на HH.ru: поиск вакансий, LLM-генерация сопроводительных писем, ответы работодателям в чате, подъём резюме, веб-дашборд.
+hh-auto-apply — личный инструмент для поиска работы на HH.ru: поиск вакансий, отклики с шаблонным письмом, LLM-ответы работодателям в чате, подъём резюме, веб-дашборд.
 Используется только локально, никому не передаётся. Работает с реальным аккаунтом HH владельца.
 Ищем **только удалёнку**: офисные вакансии (`ON_SITE_TRIGGERS`) сразу skip при `HH_SKIP_ON_SITE=1` (дефолт).
 
@@ -24,7 +24,7 @@ hh-auto-apply — личный инструмент для поиска рабо
 - `SYSTEM_PROMPT.md` — промпт для Claude Projects (онбординг пользователя), к коду не относится.
 - Состояние процессов: PID и логи воркеров — `/tmp/hh_{auto_apply,auto_reply,resume_boost,dashboard}.{pid,log}`, lock-файлы — `~/.n8n-files/*.lock`. Каталог `logs/` — остатки ручных запусков.
 
-**LLM:** Claude Haiku 4.5 (`ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"`) через Anthropic SDK. Ключ `ANTHROPIC_API_KEY` — из env/.env; дашборд при его отсутствии читает `export ANTHROPIC_API_KEY=` из `~/.bashrc`. В `auto_reply.generate_reply` — prompt caching: `SYSTEM_PROMPT` и профиль отдельными system-блоками с `cache_control` на последнем.
+**LLM:** Claude Haiku 4.5 (`ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"`) через Anthropic SDK — **только в `auto_reply.py`**. Отклики шлют шаблон `build_letter()`; `generate_cover_letter()` в `auto_apply_template.py` нигде не вызывается. Ключ `ANTHROPIC_API_KEY` нужен только воркеру `reply` — из env/.env; дашборд при его отсутствии читает `export ANTHROPIC_API_KEY=` из `~/.bashrc`. В `auto_reply.generate_reply` — prompt caching: `SYSTEM_PROMPT` и профиль отдельными system-блоками с `cache_control` на последнем.
 
 **Ветки:** `main` (эта) — основная версия на Claude; `qwen-branch` — запасной вариант на OpenRouter (там же `REVIEW.md` и `archive/` с вариантом на шаблонных письмах). Общие исправления (браузер, антибан, boost, дашборд) делать здесь и переносить в `qwen-branch` через `cherry-pick`.
 
