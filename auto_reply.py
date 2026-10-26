@@ -32,6 +32,7 @@ from auto_apply_template import (
     OPENROUTER_MODEL,
     MY_PROFILE,
     SESSION_FILE,
+    _SAVED_ALL_PROXY,
     _acquire_singleton_lock,
 )
 import metrics
@@ -444,7 +445,10 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
         blocks = [b.strip() for b in chat_history.strip().split("\n\n") if b.strip()]
         if blocks:
             last = blocks[-1]
-            if last.startswith(SELF_ROLE_PREFIX) or last.startswith("[Иван"):
+            last_role = _strip_role_prefix(last)[0].lower()
+            if last.startswith(SELF_ROLE_PREFIX) or (
+                last_role and any(m in last_role for m in SELF_NAME_MARKERS)
+            ):
                 print("    ⏭️  Последний блок — от нас, отвечать не на что")
                 return "SKIP"
             # Снимаем префикс [Роль] и сверяем содержимое с маркерами «своё»
@@ -1244,18 +1248,22 @@ def post_reply(page, text: str) -> bool:
     return False
 
 
+_log_fh = None
+
+
 def main():
+    global _log_fh
     # Создаём PID-файл для дашборда
     from pathlib import Path
     pid_file = Path("/tmp/hh_auto_reply.pid")
     pid_file.write_text(str(os.getpid()))
-    
-    # Очищаем и открываем лог-файл для записи
-    log_file = Path("/tmp/hh_auto_reply.log")
-    log_fh = open(log_file, "w", buffering=1)
-    sys.stdout = log_fh
-    sys.stderr = log_fh
-    
+
+    # Лог открываем один раз на процесс: watch-итерации дописывают, а не затирают
+    if _log_fh is None:
+        _log_fh = open(Path("/tmp/hh_auto_reply.log"), "w", buffering=1)
+        sys.stdout = _log_fh
+        sys.stderr = _log_fh
+
     print("\n" + "=" * 50)
     print("💬 HH.ru Авто-ответчик")
     print("=" * 50)
@@ -1272,7 +1280,7 @@ def main():
 
     stats = {"replied": 0, "skipped": 0, "errors": 0}
 
-    proxy = os.getenv("HH_PROXY") or os.getenv("ALL_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    proxy = os.getenv("HH_PROXY") or _SAVED_ALL_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     headless = os.getenv("HH_HEADLESS", "").lower() in ("1", "true", "yes")
     launch_kwargs = {"headless": headless, "slow_mo": 0 if headless else 300}
     # Add Chrome args to avoid sandbox issues in some environments

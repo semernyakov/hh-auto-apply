@@ -25,7 +25,7 @@ from typing import Any
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
 
-from auto_apply_template import SESSION_FILE
+from auto_apply_template import _SAVED_ALL_PROXY, SESSION_FILE
 import metrics
 
 load_dotenv()
@@ -370,7 +370,7 @@ def boost_all(page) -> dict[str, Any]:
         try:
             page.goto(RESUMES_URL, wait_until="domcontentloaded", timeout=60000)
             break
-        except PlaywrightTimeoutError as e:
+        except PlaywrightTimeoutError:
             if attempt == max_attempts:
                 raise
             print(f"  ⚠️  Таймаут при загрузке страницы резюме (попытка {attempt}/{max_attempts}), пробую снова...")
@@ -455,7 +455,7 @@ def _run_once() -> dict[str, int]:
 
     proxy = (
         os.getenv("HH_PROXY")
-        or os.getenv("ALL_PROXY")
+        or _SAVED_ALL_PROXY
         or os.getenv("HTTPS_PROXY")
         or os.getenv("https_proxy")
     )

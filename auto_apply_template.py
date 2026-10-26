@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 HH.ru Автооткликатор
-Автоматический поиск вакансий и отклик с AI-генерированными письмами
+Автоматический поиск вакансий и отклик с шаблонными письмами (build_letter)
 
 ИНСТРУКЦИЯ:
 1. Скопируй profile.example.py → profile.py и заполни своими данными
-2. Положи ANTHROPIC_API_KEY в переменную окружения (или .env)
+2. Положи ANTHROPIC_API_KEY в переменную окружения (или .env) — для auto_reply.py
 3. Запусти: python3 auto_apply_template.py
 """
 
 import fcntl
-import json
 import os
 import random
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 from anthropic import Anthropic
 from openai import OpenAI
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
@@ -430,7 +430,9 @@ def has_ml_marker(title: str) -> bool:
 
 # ============== КОД ==============
 
-# Anthropic SDK не умеет SOCKS-прокси в all_proxy — убираем перед импортом
+# Anthropic SDK не умеет SOCKS-прокси в all_proxy — убираем перед клиентом,
+# но сохраняем значение для Playwright (перенесено из archive/ в qwen-branch).
+_SAVED_ALL_PROXY = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy") or ""
 os.environ.pop("all_proxy", None)
 os.environ.pop("ALL_PROXY", None)
 
@@ -547,13 +549,15 @@ def search_vacancies(page, query: str = "", page_num: int = 0, resume_id: str = 
     if resume_id:
         url = (
             f"https://hh.ru/search/vacancy?resume={resume_id}&from=resumelist"
+            "&schedule=remote"
+            "&experience=between3And6&experience=moreThan6"
             "&search_period=3"
             "&order_by=publication_time"
             f"&items_on_page=50&page={page_num}"
         )
     else:
         url = (
-            f"https://hh.ru/search/vacancy?text={query}"
+            f"https://hh.ru/search/vacancy?text={quote(query, safe='')}"
             "&area=113"
             "&schedule=remote"
             "&experience=between3And6&experience=moreThan6"
@@ -790,9 +794,9 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
                         # Пробуем ещё раз методом press
                         letter_area.press("Control+a")
                         letter_area.press("Backspace")
-                        for char in message:
+                        for idx, char in enumerate(message, 1):
                             letter_area.press(char)
-                            if len(char) % 50 == 0:
+                            if idx % 50 == 0:
                                 page.wait_for_timeout(50)
                         page.wait_for_timeout(500)
                         actual_value = letter_area.input_value(timeout=1000)
@@ -857,30 +861,28 @@ def apply_to_vacancy(page, url: str, message: str) -> dict:
         return {"status": "error", "reason": str(e)}
 
 
+_log_fh = None
+
+
 def main():
+    global _log_fh
     dry_run = "--dry-run" in sys.argv
-    
+
     # Создаём PID-файл для дашборда
     pid_file = Path("/tmp/hh_auto_apply.pid")
     pid_file.write_text(str(os.getpid()))
-    
-    # Очищаем и открываем лог-файл для записи
-    log_file = Path("/tmp/hh_auto_apply.log")
-    log_fh = open(log_file, "w", buffering=1)
-    sys.stdout = log_fh
-    sys.stderr = log_fh
-    
+
+    # Лог открываем один раз на процесс: watch-итерации дописывают, а не затирают
+    if _log_fh is None:
+        _log_fh = open(Path("/tmp/hh_auto_apply.log"), "w", buffering=1)
+        sys.stdout = _log_fh
+        sys.stderr = _log_fh
+
     print("\n" + "="*50)
     print("🚀 HH.ru Автооткликатор" + (" [DRY-RUN]" if dry_run else ""))
     print("="*50)
 
-    # Проверка настроек
-    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
-        print("\n❌ Ошибка: Укажи свой OpenRouter API ключ!")
-        print("   Получи на https://openrouter.ai/keys")
-        print("   Или задай OPENROUTER_API_KEY в .env файле")
-        return
-
+    # Проверка настроек (LLM откликам не нужен — письмо шаблонное)
     if "YOUR_SEARCH_QUERY" in SEARCH_QUERIES[0]:
         print("\n❌ Ошибка: Укажи поисковые запросы!")
         print("   Открой auto_apply.py и заполни SEARCH_QUERIES")
@@ -926,7 +928,7 @@ def main():
         if emp_n and tit_n:
             applied_index["by_employer_title"].setdefault((emp_n, tit_n), entry)
 
-    proxy = os.getenv("HH_PROXY") or os.getenv("ALL_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    proxy = os.getenv("HH_PROXY") or _SAVED_ALL_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
     headless = dry_run or os.getenv("HH_HEADLESS", "").lower() in ("1", "true", "yes")
     launch_kwargs = {"headless": headless, "slow_mo": 0 if headless else 300}
     # Add Chrome args to avoid sandbox issues in some environments
@@ -948,11 +950,15 @@ def main():
         context = browser.new_context(storage_state=SESSION_FILE)
         page = context.new_page()
         
-        sources = [{"label": f"🔍 Поиск: {q}", "query": q} for q in SEARCH_QUERIES]
+        sources = [
+            {"label": f"🔍 Поиск: {q}", "query": q, "source": f"query:{n}"}
+            for n, q in enumerate(SEARCH_QUERIES, 1)
+        ]
         if RESUME_ID:
             sources.append({
                 "label": f"🎯 HH-рекомендации по резюме {RESUME_ID[:8]}…",
                 "resume_id": RESUME_ID,
+                "source": "resume",
             })
 
         for src in sources:
@@ -970,6 +976,9 @@ def main():
                     resume_id=src.get("resume_id", ""),
                 )
                 print(f"  📊 Найдено вакансий: {len(vacancies)}")
+                # query:N — номер в SEARCH_QUERIES, resume — выдача «по резюме»
+                for v in vacancies:
+                    v["source"] = src["source"]
                 
                 for i, vacancy in enumerate(vacancies, 1):
                     print(f"\n  [{i}/{len(vacancies)}] {vacancy['title'][:50]}...")
@@ -1012,6 +1021,7 @@ def main():
                                     chat_url=vacancy['url'],
                                     payload={
                                         "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "triggers": [manual_trigger],
@@ -1023,7 +1033,7 @@ def main():
                             continue
 
                         if has_ml_marker(vacancy['title']):
-                            print(f"      🚩 ML без AI/LLM-контекста, в ручную очередь")
+                            print("      🚩 ML без AI/LLM-контекста, в ручную очередь")
                             if metrics_sink:
                                 metrics_sink.log_event(
                                     kind="pending_manual",
@@ -1031,6 +1041,7 @@ def main():
                                     chat_url=vacancy['url'],
                                     payload={
                                         "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "triggers": ["ml-only-title"],
@@ -1055,6 +1066,7 @@ def main():
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
                                     },
                                 )
                             stats['skipped'] += 1
@@ -1063,7 +1075,7 @@ def main():
                         if is_language_target_role(vacancy['title']):
                             pass  # Python/automation таргет — продолжаем обработку
                         elif has_ai_marker(vacancy['title']):
-                            print(f"      🚩 AI/LLM без явной позиции, в ручную очередь")
+                            print("      🚩 AI/LLM без явной позиции, в ручную очередь")
                             if metrics_sink:
                                 metrics_sink.log_event(
                                     kind="pending_manual",
@@ -1071,6 +1083,7 @@ def main():
                                     chat_url=vacancy['url'],
                                     payload={
                                         "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "triggers": ["ai-only-title"],
@@ -1081,7 +1094,7 @@ def main():
                             stats['skipped'] += 1
                             continue
                         else:
-                            print(f"      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
+                            print("      ⏭️  Нет python/AI/ML маркеров в названии, пропускаю")
                             if metrics_sink:
                                 metrics_sink.log_event(
                                     kind="skip",
@@ -1092,6 +1105,7 @@ def main():
                                         "title": vacancy['title'],
                                         "employer": vacancy['employer'],
                                         "vacancy_url": vacancy['url'],
+                                        "source": vacancy.get("source", ""),
                                     },
                                 )
                             stats['skipped'] += 1
@@ -1112,6 +1126,7 @@ def main():
                                     "title": vacancy['title'],
                                     "employer": vacancy['employer'],
                                     "vacancy_url": vacancy['url'],
+                                    "source": vacancy.get("source", ""),
                                     "triggers": on_site,
                                 },
                             )
@@ -1132,6 +1147,7 @@ def main():
                                 chat_url=vacancy['url'],
                                 payload={
                                     "vacancy_url": vacancy['url'],
+                                    "source": vacancy.get("source", ""),
                                     "title": vacancy['title'],
                                     "employer": vacancy['employer'],
                                     "triggers": triggers,
@@ -1178,6 +1194,7 @@ def main():
                                 payload={
                                     "letter": letter,
                                     "vacancy_url": vacancy['url'],
+                                    "source": vacancy.get("source", ""),
                                     "title": vacancy['title'],
                                     "employer": vacancy['employer'],
                                     "type": "standard" if not addendums else "standard+addendums",
@@ -1197,6 +1214,7 @@ def main():
                                 chat_url=vacancy['url'],
                                 payload={
                                     "vacancy_url": vacancy['url'],
+                                    "source": vacancy.get("source", ""),
                                     "title": vacancy['title'],
                                     "employer": vacancy['employer'],
                                     "triggers": ["screening_questions"],
