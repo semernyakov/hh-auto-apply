@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## О проекте
 
 hh-auto-apply — личный инструмент для поиска работы на HH.ru: поиск вакансий, отклики с шаблонным письмом, LLM-ответы работодателям в чате, подъём резюме, веб-дашборд.
-Используется только локально, никому не передаётся. Работает с реальным аккаунтом HH владельца.
+Развивается как коммерческий продукт для других соискателей (решение 2026-10-26): в коде и шаблонах по умолчанию — никаких данных владельца, всё личное настраивается через раздел «Резюме». Сейчас бот работает с реальным аккаунтом HH владельца.
 Ищем **только удалёнку**: офисные вакансии (`ON_SITE_TRIGGERS`) сразу skip при `HH_SKIP_ON_SITE=1` (дефолт).
 
 Документация, комментарии и сообщения в коде — на русском.
@@ -19,7 +19,7 @@ hh-auto-apply — личный инструмент для поиска рабо
 - `metrics.py` — SQLite `~/.n8n-files/hh_metrics.sqlite` (каталог — `N8N_FILES_DIR`), таблица `events` (`kind`, `model`, токены, `cost_usd`, `vacancy`, `chat_url`, `payload_json`). Все воркеры и дашборд пишут/читают её.
 - `notify.py` — Telegram-уведомления (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`), без них — no-op.
 - `hh_login.py` — ручной логин в видимом браузере, сохраняет сессию в `~/.n8n-files/hh_session.json`.
-- `profile.py` (из `profile.example.py`) — `SEARCH_QUERIES`, `MY_PROFILE`, `SELF_NAME_MARKERS`, `OWN_TEXT_MARKERS`, `SALARY_ADDENDUM`, `LETTER_SIGNATURE`.
+- `profile_store.py` — профиль соискателя: `load()`/`validate()`/`save()`, хранится в `profile.json` (права 600, в `.gitignore`), его пишет раздел «Резюме» (`GET/POST /api/profile`). Пока json нет — читается `profile.py` (из `profile.example.py`). Поля: `resume_id`, `search_queries`, `letter_body`, `letter_signature`, `salary_addendum`, `my_profile`, `self_name_markers`, `own_text_markers`. `HH_RESUME_ID` в `.env` перекрывает `resume_id`. Боты читают профиль при старте — после сохранения их нужно перезапустить; дашборд перечитывает сам (`reload_profile()`).
 - Разовые скрипты: `migrate_history_roles.py` (`--days N`, запись только с `--apply`), `backfill_positive.py` (`--dry-run`, `--headed`, `--limit N`).
 - `SYSTEM_PROMPT.md` — промпт для Claude Projects (онбординг пользователя), к коду не относится.
 - Состояние процессов: PID и логи воркеров — `/tmp/hh_{auto_apply,auto_reply,resume_boost,dashboard}.{pid,log}`, lock-файлы — `~/.n8n-files/*.lock`. Каталог `logs/` — остатки ручных запусков.
@@ -68,4 +68,4 @@ make start | stop | restart | status | logs   # дашборд (HH_HEADLESS=1), 
 
 **Достоверность.** Утверждения о коде, метриках и состоянии воркеров подтверждать файлами или результатами инструментов (`make status`, `/api/status`, SQLite). Непроверенное — убрать или вернуть `<<< PARTIAL` с причиной. Не выдавать догадки за факты. Если нужного инструмента нет в среде — написать `ERROR: Tool '<имя>' not in runtime` и остановиться, не имитируя вызов.
 
-**Контекст.** За один ход подгружать не более одного внешнего файла, если пользователь не указал иное. Большие файлы (`dashboard.py`, `auto_reply.py`, `auto_apply_template.py`) читать диапазонами. `.env`, `profile.py` и `~/.n8n-files/` не читать без необходимости.
+**Контекст.** За один ход подгружать не более одного внешнего файла, если пользователь не указал иное. Большие файлы (`dashboard.py`, `auto_reply.py`, `auto_apply_template.py`) читать диапазонами. `.env`, `profile.py`, `profile.json` и `~/.n8n-files/` не читать без необходимости.

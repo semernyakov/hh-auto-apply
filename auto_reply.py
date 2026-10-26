@@ -34,6 +34,7 @@ from auto_apply_template import (
 )
 import metrics
 import notify
+import profile_store
 
 load_dotenv()
 metrics.init_db()
@@ -834,19 +835,18 @@ SELF_ROLE_PREFIX = f"[{SELF_ROLE}]"
 # ФИО не попадали в публичный код. Если переменная не задана — fallback на пусто
 # (тогда сторона определяется только по другим эвристикам).
 try:
-    from profile import SELF_NAME_MARKERS as _SNM  # type: ignore
-    SELF_NAME_MARKERS = tuple(s.lower() for s in _SNM)
+    _PROFILE = profile_store.load()
 except Exception:
-    SELF_NAME_MARKERS: tuple[str, ...] = ()
+    _PROFILE = {}
+SELF_NAME_MARKERS: tuple[str, ...] = tuple(s.lower() for s in _PROFILE.get("self_name_markers", ()))
 
 # Длинные строки подписи (≥10 символов) из LETTER_SIGNATURE — характерные
 # фрагменты, по которым легко идентифицировать собственное письмо. HH часто
 # рендерит подпись отклика отдельным сообщением в чате с пустым author —
 # парсер по геометрии может ошибочно отнести её к работодателю.
 try:
-    from profile import LETTER_SIGNATURE as _LS  # type: ignore
     SELF_SIGNATURE_LINES = tuple(
-        l.strip().lower() for l in (_LS or "").splitlines()
+        l.strip().lower() for l in (_PROFILE.get("letter_signature") or "").splitlines()
         if l.strip() and len(l.strip()) >= 10
     )
 except Exception:
@@ -862,11 +862,9 @@ except Exception:
 #       "вынужден вам отказать", "извините, не подойдёт",
 #       "с уважением, иван", "благодарю за предложение",
 #   )
-try:
-    from profile import OWN_TEXT_MARKERS as _OTM  # type: ignore
-    OWN_TEXT_MARKERS = tuple(s.strip().lower() for s in _OTM if s and s.strip())
-except Exception:
-    OWN_TEXT_MARKERS: tuple[str, ...] = ()
+OWN_TEXT_MARKERS: tuple[str, ...] = tuple(
+    s.strip().lower() for s in _PROFILE.get("own_text_markers", ()) if s and s.strip()
+)
 
 
 def _text_is_own(text: str, prev_self_replies: tuple[str, ...] = ()) -> bool:

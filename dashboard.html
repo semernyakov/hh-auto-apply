@@ -123,6 +123,7 @@ button, select, textarea { font: inherit; color: inherit; }
 .btn.danger { color: var(--bad); }
 .btn.small { padding: 4px 10px; font-size: 13px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.btn[hidden] { display: none; }
 
 /* ---------- боты ---------- */
 .bots { list-style: none; margin: 0; padding: 8px 0; }
@@ -173,13 +174,40 @@ tr.child td:first-child { padding-left: 36px; }
 .pager select { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); padding: 3px 6px; }
 .pager .info { margin: 0 6px; font-variant-numeric: tabular-nums; }
 
-/* ---------- свёрнутые блоки ---------- */
-details.fold { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
-details.fold > summary { cursor: pointer; padding: 16px 20px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
-details.fold > summary::-webkit-details-marker { display: none; }
-details.fold > summary::after { content: "Показать"; color: var(--action); font-weight: 500; font-size: 14px; }
-details.fold[open] > summary::after { content: "Скрыть"; }
-.fold-body { padding: 0 20px 20px; }
+/* ---------- резюме ---------- */
+.profile { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; padding: 16px 20px 24px; align-items: start; }
+@media (max-width: 1080px) { .profile { grid-template-columns: minmax(0, 1fr); } }
+.profile fieldset { border: 0; margin: 0 0 22px; padding: 0; display: grid; gap: 6px; }
+.profile legend { font-weight: 600; font-size: 16px; margin-bottom: 6px; padding: 0; }
+.profile label { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.profile input, .profile textarea {
+  width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 12px;
+  background: var(--surface); line-height: 1.5; resize: vertical;
+}
+.profile input:focus, .profile textarea:focus { outline: none; border-color: var(--action); }
+.profile [aria-invalid="true"] { border-color: var(--bad); }
+.hint { margin: 2px 0 0; font-size: 13px; color: var(--faint); }
+.hint code, .profile code { font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.profile-side { position: sticky; top: 16px; display: grid; gap: 16px; }
+.preview-card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.save-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.save-bar .status { flex-basis: 100%; margin: 0; font-size: 13px; color: var(--muted); }
+.save-bar .status.ok { color: var(--good); } .save-bar .status.err { color: var(--bad); }
+
+/* ---------- разделы ---------- */
+.top-row { display: flex; align-items: center; justify-content: space-between; gap: 16px 28px; flex-wrap: wrap; }
+.views { min-width: 0; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding: 4px; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+.views a {
+  padding: 7px 14px; border-radius: 99px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px;
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 7px;
+}
+.views a:hover { color: var(--ink); }
+.views a[aria-current="page"] { background: var(--action); color: var(--action-ink); }
+.views a[aria-current="page"] .badge { background: rgba(255,255,255,.25); color: inherit; }
+.views .badge:empty { display: none; }
+[data-view][hidden] { display: none !important; }
+@media (max-width: 640px) { .top-row { display: grid; } .views { width: 100%; } }
+.panel-body { padding: 16px 20px 20px; }
 .settings { display: grid; gap: 10px 28px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 0; }
 .settings div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dashed var(--line); padding: 6px 0; }
 .settings dt { color: var(--muted); }
@@ -227,7 +255,16 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
 <body>
 
 <header class="top">
-  <h1>Поиск работы</h1>
+  <div class="top-row">
+    <h1>Поиск работы</h1>
+    <nav class="views" aria-label="Разделы">
+      <a href="#home" data-view="home">Главная <span class="badge" id="nav-inbox"></span></a>
+      <a href="#resume" data-view="resume">Резюме</a>
+      <a href="#history" data-view="history">История действий</a>
+      <a href="#settings" data-view="settings">Настройки и активность</a>
+      <a href="#logs" data-view="logs">Логи ботов</a>
+    </nav>
+  </div>
   <div class="today">
     <p class="today-line" id="today-line">Загружаю данные…</p>
     <div class="meter" id="today-meter" role="progressbar" aria-label="Отклики за 24 часа от суточного лимита" aria-valuemin="0"><i></i></div>
@@ -237,7 +274,7 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
 <main class="layout">
 
   <!-- ===== Ждёт вас ===== -->
-  <section class="panel" aria-labelledby="inbox-title">
+  <section class="panel" data-view="home" aria-labelledby="inbox-title">
     <div class="panel-head">
       <h2 id="inbox-title">Ждёт вас</h2>
       <p>Здесь бот остановился и оставил решение вам</p>
@@ -252,7 +289,7 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
   </section>
 
   <!-- ===== боковая колонка ===== -->
-  <aside class="side">
+  <aside class="side" data-view="home">
     <section class="panel" aria-labelledby="bots-title">
       <div class="panel-head"><h2 id="bots-title">Боты</h2></div>
       <ul class="bots">
@@ -297,8 +334,67 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
     </section>
   </aside>
 
+  <!-- ===== резюме ===== -->
+  <section class="panel wide" data-view="resume" aria-labelledby="resume-title" hidden>
+    <div class="panel-head">
+      <h2 id="resume-title">Резюме и письма</h2>
+      <p id="pf-source">Загружаю…</p>
+    </div>
+    <form class="profile" id="profile-form" novalidate>
+      <div class="profile-main">
+        <fieldset>
+          <legend>Резюме на HH</legend>
+          <label for="pf-resume_id">Код резюме</label>
+          <input id="pf-resume_id" name="resume_id" autocomplete="off" spellcheck="false" placeholder="например, 4f3a9c…">
+          <p class="hint" id="pf-resume-hint">Откройте резюме на hh.ru: код — это длинная строка из букв и цифр в адресе страницы после <code>/resume/</code>. По нему бот берёт вакансии, которые HH подобрал под ваше резюме. Можно оставить пустым.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Что искать</legend>
+          <label for="pf-search_queries">Поисковые запросы — по одному на строку</label>
+          <textarea id="pf-search_queries" name="search_queries" rows="6" spellcheck="false" placeholder="Python Tech Lead&#10;Senior Python Developer AI"></textarea>
+          <p class="hint">Работает язык запросов HH: <code>AND</code>, <code>OR</code>, <code>NOT</code>, кавычки и скобки. Бот ищет только удалённую работу с опытом от 3 лет.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Сопроводительное письмо</legend>
+          <label for="pf-letter_body">Текст письма</label>
+          <textarea id="pf-letter_body" name="letter_body" rows="5"></textarea>
+          <label for="pf-salary_addendum">Абзац о зарплате — добавляется, если работодатель просит назвать ожидания</label>
+          <textarea id="pf-salary_addendum" name="salary_addendum" rows="2" placeholder="Мои ожидания по зарплате — от … ₽ на руки."></textarea>
+          <label for="pf-letter_signature">Подпись</label>
+          <textarea id="pf-letter_signature" name="letter_signature" rows="4" placeholder="С уважением,&#10;Имя Фамилия&#10;Telegram: @…"></textarea>
+        </fieldset>
+        <fieldset>
+          <legend>О вас — для ответов в чатах</legend>
+          <label for="pf-my_profile">Опыт, проекты, стек, контакты</label>
+          <textarea id="pf-my_profile" name="my_profile" rows="10"></textarea>
+          <p class="hint">Бот отвечает работодателям только по этому тексту. Чем конкретнее проекты и цифры, тем меньше общих фраз в ответах.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Как бот узнаёт ваши сообщения в чате</legend>
+          <label for="pf-self_name_markers">Ваше имя в разных написаниях — по одному на строку</label>
+          <textarea id="pf-self_name_markers" name="self_name_markers" rows="3" spellcheck="false" placeholder="иван петров&#10;петров иван"></textarea>
+          <label for="pf-own_text_markers">Ваши типичные фразы — по одной на строку</label>
+          <textarea id="pf-own_text_markers" name="own_text_markers" rows="3" placeholder="вынужден вам отказать&#10;благодарю за предложение"></textarea>
+          <p class="hint">Нужно, чтобы бот не принял ваше собственное сообщение за сообщение работодателя и не ответил сам себе.</p>
+        </fieldset>
+      </div>
+      <aside class="profile-side">
+        <div class="preview-card">
+          <div class="label">Так выглядит письмо</div>
+          <div class="textbox" id="pf-preview"></div>
+          <p class="hint">Если вакансия просит указать зарплату, перед подписью добавится абзац о зарплате.</p>
+        </div>
+        <div class="save-bar">
+          <p class="status" id="pf-status"></p>
+          <button class="btn primary" type="submit" id="pf-save">Сохранить</button>
+          <button class="btn" type="button" id="pf-restart" hidden>Перезапустить ботов</button>
+        </div>
+      </aside>
+    </form>
+  </section>
+
   <!-- ===== история ===== -->
-  <section class="panel wide" aria-labelledby="history-title">
+  <section class="panel wide" data-view="history" aria-labelledby="history-title" hidden>
     <div class="panel-head">
       <h2 id="history-title">История действий</h2>
       <p>Нажмите на строку, чтобы прочитать письмо или ответ целиком</p>
@@ -331,9 +427,12 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
     </div>
   </section>
 
-  <details class="fold wide" id="fold-settings">
-    <summary>Настройки и активность</summary>
-    <div class="fold-body">
+  <section class="panel wide" data-view="settings" aria-labelledby="settings-title" hidden>
+    <div class="panel-head">
+      <h2 id="settings-title">Настройки и активность</h2>
+      <p>Меняются через переменные окружения, см. README</p>
+    </div>
+    <div class="panel-body">
       <dl class="settings">
         <div><dt>Обход вакансий</dt><dd id="s-apply-interval">—</dd></div>
         <div><dt>Проверка чатов</dt><dd id="s-reply-interval">—</dd></div>
@@ -352,11 +451,14 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
         </table>
       </div>
     </div>
-  </details>
+  </section>
 
-  <details class="fold wide" id="fold-logs">
-    <summary>Логи ботов</summary>
-    <div class="fold-body">
+  <section class="panel wide" data-view="logs" aria-labelledby="logs-title" hidden>
+    <div class="panel-head">
+      <h2 id="logs-title">Логи ботов</h2>
+      <p>Последние 120 строк, обновляются сами</p>
+    </div>
+    <div class="panel-body">
       <div class="log-tabs">
         <button class="filter" data-log="apply" aria-pressed="true">Отклики</button>
         <button class="filter" data-log="reply" aria-pressed="false">Ответы в чатах</button>
@@ -364,7 +466,7 @@ textarea.editor:focus { outline: none; border-color: var(--action); }
       </div>
       <pre class="log" id="log">Лог пуст</pre>
     </div>
-  </details>
+  </section>
 </main>
 
 <!-- ===== окна ===== -->
@@ -573,6 +675,8 @@ async function refreshInbox(){
     b.textContent = inbox[k].length;
     b.classList.toggle('hot', k !== 'rejections' && inbox[k].length > 0);
   }
+  const waiting = inbox.positive.length + inbox.robotq.length + inbox.pending.length;
+  $('#nav-inbox').textContent = waiting ? fmtNum(waiting) : '';
   // при первой загрузке открываем первую вкладку, где что-то есть
   if (!inboxChosen) {
     inboxChosen = true;
@@ -906,10 +1010,90 @@ async function openEvent(e){
   } catch(_) {}
 }
 
+/* ================= разделы ================= */
+const VIEWS = ['home', 'resume', 'history', 'settings', 'logs'];
+let view = 'home';
+function showView(){
+  const v = location.hash.slice(1);
+  view = VIEWS.includes(v) ? v : 'home';
+  $$('main [data-view]').forEach(el => { el.hidden = el.dataset.view !== view; });
+  $$('.views a').forEach(a => {
+    if (a.dataset.view === view) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  if (view === 'history') { refreshEvents(); refreshCounts(); }
+  if (view === 'logs') refreshLog();
+  if (view === 'resume' && !profileDirty) loadProfile();
+}
+window.addEventListener('hashchange', showView);
+
+/* ================= резюме ================= */
+const PF_FIELDS = ['resume_id', 'search_queries', 'letter_body', 'salary_addendum', 'letter_signature',
+                   'my_profile', 'self_name_markers', 'own_text_markers'];
+const PF_LISTS = new Set(['search_queries', 'self_name_markers', 'own_text_markers']);
+let profileDirty = false;
+const pfStatus = (text, cls = '') => { const el = $('#pf-status'); el.textContent = text; el.className = 'status ' + cls; };
+
+function renderPreview(){
+  const parts = [$('#pf-letter_body').value.trim(), $('#pf-letter_signature').value.trim()].filter(Boolean);
+  $('#pf-preview').textContent = parts.join('\n\n') || 'Заполните текст письма и подпись';
+}
+async function loadProfile(){
+  let d; try { d = await getJSON('/api/profile'); } catch(_) { pfStatus('Не удалось загрузить профиль', 'err'); return; }
+  for (const k of PF_FIELDS) {
+    const v = d.profile[k];
+    $('#pf-' + k).value = PF_LISTS.has(k) ? (v || []).join('\n') : (v || '');
+    $('#pf-' + k).removeAttribute('aria-invalid');
+  }
+  $('#pf-source').textContent = d.source === 'profile.json'
+    ? 'Изменения применятся к ботам после перезапуска'
+    : d.source === 'profile.py'
+      ? 'Сейчас настройки берутся из profile.py. После сохранения бот будет брать их отсюда'
+      : 'Профиль ещё не заполнен — без него боты не запустятся';
+  const envNote = $('#pf-env-note');
+  if (d.resume_id_from_env && !envNote) $('#pf-resume-hint').insertAdjacentHTML('afterend',
+    '<p class="hint" id="pf-env-note" style="color:var(--attention)">Сейчас код резюме задан переменной HH_RESUME_ID в .env — она важнее этого поля. Уберите её, чтобы работало значение отсюда.</p>');
+  profileDirty = false; pfStatus(''); renderPreview();
+  $('#pf-restart').hidden = true;
+}
+$('#profile-form').addEventListener('input', (ev) => {
+  profileDirty = true; pfStatus('Есть несохранённые изменения');
+  if (ev.target.id === 'pf-letter_body' || ev.target.id === 'pf-letter_signature') renderPreview();
+});
+$('#profile-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = {};
+  for (const k of PF_FIELDS) {
+    const v = $('#pf-' + k).value;
+    body[k] = PF_LISTS.has(k) ? v.split('\n').map(x => x.trim()).filter(Boolean) : v;
+    $('#pf-' + k).removeAttribute('aria-invalid');
+  }
+  $('#pf-save').disabled = true; pfStatus('Сохраняю…');
+  const { ok, data } = await post('/api/profile', body);
+  $('#pf-save').disabled = false;
+  if (!ok) {
+    const errs = data.errors || [data.error || 'Не удалось сохранить'];
+    errs.forEach(e => { const f = $('#pf-' + e.split(':')[0]); if (f) f.setAttribute('aria-invalid', 'true'); });
+    pfStatus(errs.map(e => e.replace(/^[a-z_]+: /, '')).join('. '), 'err');
+    return;
+  }
+  profileDirty = false;
+  const running = status ? Object.entries(status.workers || {}).filter(([, w]) => w.running).map(([n]) => n) : [];
+  pfStatus(running.length ? 'Сохранено. Работающие боты подхватят изменения после перезапуска' : 'Сохранено', 'ok');
+  $('#pf-restart').hidden = !running.length;
+  $('#pf-restart').onclick = async () => {
+    $('#pf-restart').disabled = true;
+    for (const n of running) await post(`/api/${n}/restart`);
+    $('#pf-restart').disabled = false; $('#pf-restart').hidden = true;
+    toast('Боты перезапущены с новыми настройками'); refreshStatus();
+  };
+});
+window.addEventListener('beforeunload', (ev) => { if (profileDirty) { ev.preventDefault(); ev.returnValue = ''; } });
+
 /* ================= логи ================= */
 let logName = 'apply';
 async function refreshLog(){
-  if (!$('#fold-logs').open) return;
+  if (view !== 'logs') return;
   try {
     const el = $('#log'), t = await (await fetch(`/api/log/${logName}?lines=120`)).text();
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
@@ -922,18 +1106,19 @@ $$('[data-log]').forEach(b => b.addEventListener('click', () => {
   $$('[data-log]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
   refreshLog();
 }));
-$('#fold-logs').addEventListener('toggle', refreshLog);
 
 /* ================= обновление ================= */
 let tickN = 0;
 async function tick(){
   if (document.hidden) return;
   const slow = tickN++ % 6 === 0;                   // редкие данные — раз в ~30 с
+  const history = view === 'history' && !overlay.classList.contains('show');
   await Promise.all([refreshStatus(), refreshInbox(), refreshLog(),
-    overlay.classList.contains('show') ? null : refreshEvents(),
-    slow ? refreshFigures() : null, slow ? refreshCounts() : null]);
+    history ? refreshEvents() : null,
+    slow ? refreshFigures() : null, slow && history ? refreshCounts() : null]);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+showView();
 tick();
 setInterval(tick, 5000);
 </script>

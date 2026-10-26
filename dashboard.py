@@ -17,7 +17,9 @@ from typing import Any
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+import auto_apply_template
 import metrics
+import profile_store
 from auto_apply_template import (
     DELAY_APPLY_MAX,
     DELAY_APPLY_MIN,
@@ -508,6 +510,29 @@ def api_pending_send(event_id: int, body: dict = Body(...)) -> JSONResponse:
         {"ok": False, "error": f"{result.get('status')}: {result.get('reason', '')}"},
         status_code=400,
     )
+
+
+@app.get("/api/profile")
+def api_profile() -> JSONResponse:
+    try:
+        data = profile_store.load()
+    except FileNotFoundError:
+        data = profile_store.validate({})[0]
+    return JSONResponse({
+        "profile": data,
+        "source": profile_store.source(),
+        "resume_id_from_env": bool(os.getenv("HH_RESUME_ID")),
+        "running": [name for name in WORKERS if _process_status(name)["running"]],
+    })
+
+
+@app.post("/api/profile")
+def api_profile_save(body: dict = Body(...)) -> JSONResponse:
+    _, errors = profile_store.save(body)
+    if errors:
+        return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+    auto_apply_template.reload_profile()  # письмо в ручной очереди — уже по новому шаблону
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/log/{name}", response_class=PlainTextResponse)
