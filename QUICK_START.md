@@ -5,28 +5,28 @@
 ### Resume Boost Bot
 ```bash
 # Watch mode (continuous)
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/resume_boost.py --watch
+.venv/bin/python -u resume_boost.py --watch
 
 # Single run
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/resume_boost.py
+.venv/bin/python -u resume_boost.py
 
 # Dry run (no actual clicks)
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/resume_boost.py --dry-run
+.venv/bin/python -u resume_boost.py --dry-run
 ```
 
 ### Auto Apply Bot
 ```bash
 # Watch mode (continuous)
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/auto_apply_template.py --watch
+.venv/bin/python -u auto_apply_template.py --watch
 
 # Single run
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/auto_apply_template.py
+.venv/bin/python -u auto_apply_template.py
 ```
 
 ### Dashboard
 ```bash
 # Start dashboard
-/home/master/my-workspace/hh-auto-apply/.venv/bin/python -u /home/master/my-workspace/hh-auto-apply/dashboard.py
+.venv/bin/python -u dashboard.py
 
 # Dashboard will be available at http://127.0.0.1:8765
 ```
@@ -49,5 +49,5 @@ kill <PID>
 
 ## Logs
 - **Resume Boost**: `/tmp/hh_resume_boost.log`
-- **Auto Apply**: `/home/master/my-workspace/hh-auto-apply/logs/auto_apply.log`
-- **Dashboard**: `/home/master/my-workspace/hh-auto-apply/logs/dashboard.log`
+- **Auto Apply**: `logs/auto_apply.log`
+- **Dashboard**: `logs/dashboard.log`
