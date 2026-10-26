@@ -2,6 +2,9 @@
 
 > Автоматизация поиска работы на HH.ru: умный поиск вакансий, AI-генерация сопроводительных писем и человечные ответы в чате. Личные данные пользователя — вне публичного кода.
 
+> [!NOTE]
+> **Ветка `qwen-branch` — запасной вариант на OpenRouter.** Письма и ответы в чате генерируются через OpenRouter (OpenAI-совместимый API): нужны `OPENROUTER_API_KEY` в `.env` и пакет `openai` (`pip install openai`), модель — `OPENROUTER_MODEL` (по умолчанию `google/gemma-4-31b-it:free`). Остальная документация ниже описывает основную версию на Claude из ветки `main`.
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Claude Haiku 4.5](https://img.shields.io/badge/AI-Claude%20Haiku%204.5-D97757?logo=anthropic&logoColor=white)](https://www.anthropic.com/claude)
