@@ -717,9 +717,11 @@ def generate_reply(chat_history: str, vacancy_title: str = "", chat_url: str = "
     except Exception as e:
         print(f"  ⚠️  Ошибка генерации ответа: {e}")
         # Сеть/таймаут (нет status_code), ключ, лимиты, перегрузка — модель недоступна
-        # целиком. 400 и прочие 4xx — проблема конкретного запроса, обход не рвём.
+        # целиком. 400 и прочие 4xx — проблема конкретного запроса, обход не рвём,
+        # кроме 400 «credit balance is too low»: кончились деньги на счёте Anthropic.
         status = getattr(e, "status_code", None)
-        retryable = status is None or status in (401, 403, 429) or status >= 500
+        no_credit = status in (400, 402) and ("credit balance" in str(e).lower() or "billing" in str(e).lower())
+        retryable = status is None or status in (401, 403, 429) or status >= 500 or no_credit
         metrics.log_event(
             kind="error",
             model=ANTHROPIC_MODEL,
