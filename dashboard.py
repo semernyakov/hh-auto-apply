@@ -10,12 +10,11 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 import metrics
@@ -58,6 +57,25 @@ WORKERS = {
 app = FastAPI(title="HH-bot dashboard")
 metrics.init_db()
 
+DASHBOARD_HOST = os.getenv("HH_DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT = int(os.getenv("HH_DASHBOARD_PORT", "8765"))
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", DASHBOARD_HOST}
+
+
+@app.middleware("http")
+async def _local_only(request: Request, call_next):
+    # Любая открытая в браузере страница может слать запросы на 127.0.0.1:
+    # Host отсекает DNS-rebinding, Origin — чужой POST (старт воркеров, отправка).
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    if DASHBOARD_HOST != "0.0.0.0" and host not in _ALLOWED_HOSTS:
+        return JSONResponse({"ok": False, "error": f"host {host!r} не разрешён"}, status_code=403)
+    origin = request.headers.get("origin")
+    if request.method != "GET" and origin:
+        allowed = {f"http://{h}:{DASHBOARD_PORT}" for h in _ALLOWED_HOSTS}
+        if origin not in allowed:
+            return JSONResponse({"ok": False, "error": "cross-origin запрос отклонён"}, status_code=403)
+    return await call_next(request)
+
 
 # ---------- управление процессом ----------
 
@@ -97,7 +115,8 @@ def _start_worker(name: str) -> dict[str, Any]:
 
     # .env уже подгружен load_dotenv() при импорте auto_apply_template
     env = os.environ.copy()
-    if not env.get("OPENROUTER_API_KEY"):
+    # Ключ нужен только ответам в чате: отклики шлют шаблон, подъём резюме LLM не трогает
+    if name == "reply" and not env.get("OPENROUTER_API_KEY"):
         log.close()
         return {"ok": False, "error": "OPENROUTER_API_KEY не найден ни в env, ни в .env"}
     if not env.get("DISPLAY"):
