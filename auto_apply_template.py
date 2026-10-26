@@ -493,6 +493,24 @@ def classify_ml_vacancy(description: str) -> dict:
     return {"action": action, "label": label, "counts": {"ai": ai, "ml": ml, "ds": ds}, "hits": hits}
 
 
+# Основной язык вакансии в названии — не Python: «Senior .NET Developer (LLM / RAG)»
+# проходила по правилу «AI + должность». Пропуск, если Python в названии нет.
+FOREIGN_LANG_TITLE_RE = re.compile(
+    r"(?:asp)?\.net\b|\bc#|\bc\+\+|\bjava\b|\bkotlin\b|\bgolang\b|\bgo\b"
+    r"|\bphp\b|\bruby\b|\bscala\b|\b1[сc]\b",
+    re.IGNORECASE,
+)
+
+
+def foreign_lang_match(title: str) -> str:
+    """Чужой основной язык в названии (без Python) — триггер или пустая строка."""
+    t = title or ""
+    if "python" in t.lower():
+        return ""
+    m = FOREIGN_LANG_TITLE_RE.search(t)
+    return f"lang:{m.group(0).lower()}" if m else ""
+
+
 def title_route(title: str) -> tuple[str, str]:
     """Решение по названию вакансии до загрузки описания.
 
@@ -508,7 +526,11 @@ def title_route(title: str) -> tuple[str, str]:
       6) AI без должности — ручная очередь; иначе — пропуск.
     Раньше чужая роль проверялась после шагов 3–4, и Data Scientist / аналитики
     шли в ручную очередь: 0 откликов на 102 таких решения пользователя.
+    Перед всем — чужой основной язык (.NET, Java, Go, PHP…) без Python: пропуск.
     """
+    lang = foreign_lang_match(title)
+    if lang:
+        return "skip", lang
     if is_ai_target_role(title):
         return "apply", ""
     wrong = wrong_role_match(title)
